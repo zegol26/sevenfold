@@ -178,11 +178,12 @@ async function main() {
   });
   const project = await prisma.project.upsert({
     where: { clientId_code: { clientId: client.id, code: "PRJ-TECHBROS-RFOPT-001" } },
-    update: { name: "RF Optimization Program", status: "active" },
+    update: { name: "RF Optimization Program", currency: "IDR", status: "active" },
     create: {
       clientId: client.id,
       code: "PRJ-TECHBROS-RFOPT-001",
       name: "RF Optimization Program",
+      currency: "IDR",
       status: "active",
       legacySourceId: "PRJ-TECHBROS-RFOPT-001",
     },

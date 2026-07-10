@@ -216,6 +216,7 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     id: project.legacySourceId || project.code,
     label: project.name,
     meta: project.client.legacySourceId || project.client.code,
+    currency: project.currency || "USD",
   }));
   const opportunityAnalysis = mapOpportunityAnalysis(opportunities, opportunityFrameworkVersionSettings);
   const changeRequestsByProject = new Map<string, { additionalBudget: number; additionalRevenue: number }>();

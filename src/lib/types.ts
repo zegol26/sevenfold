@@ -47,6 +47,7 @@ export type Option = {
   id: string;
   label: string;
   meta?: string;
+  currency?: string;
 };
 
 export type DealTypeCriterion = {
@@ -272,6 +273,7 @@ export type ProjectExecutionProject = {
   resourceManager: string;
   contractLegalOwner: string;
   commercialOwner: string;
+  currency?: string;
   frameworkVersion: string;
   templateVersionSet: string;
   milestonePlan: string;

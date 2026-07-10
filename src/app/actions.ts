@@ -592,6 +592,7 @@ export async function createProjectAction(formData: FormData) {
   const client = await findClientByLegacyId(getValue(formData, "client_id"));
   if (!client) throw new Error("Client not found");
   const code = getValue(formData, "project_code").toUpperCase();
+  const currency = normalizeCurrency(getValue(formData, "currency_manual") || getValue(formData, "currency") || "USD");
   const frameworkVersion = await getLatestActiveFrameworkVersion();
   const activeTemplateSnapshot = await getActiveTemplateSnapshot();
   const project = await getDb().project.create({
@@ -600,6 +601,7 @@ export async function createProjectAction(formData: FormData) {
       clientId: client.id,
       code,
       name: getValue(formData, "project_name"),
+      currency,
       startDate: dateOrNull(getValue(formData, "start_date")),
       endDate: dateOrNull(getValue(formData, "end_date")),
       status: "active",
@@ -632,7 +634,7 @@ export async function createProjectAction(formData: FormData) {
       status: "active",
     },
   });
-  await writeAudit({ actorId: actor?.id, action: "CREATE_PROJECT", entityType: "project", entityId: project.legacySourceId || project.id, after: { code, name: project.name, framework_version: frameworkVersion, template_versions: activeTemplateSnapshot } });
+  await writeAudit({ actorId: actor?.id, action: "CREATE_PROJECT", entityType: "project", entityId: project.legacySourceId || project.id, after: { code, name: project.name, currency, framework_version: frameworkVersion, template_versions: activeTemplateSnapshot } });
   revalidatePath("/");
 }
 
@@ -1103,6 +1105,7 @@ export async function createExecutionProjectFromSdoaAction(formData: FormData) {
     throw new Error("Project ID already exists.");
   }
   const frameworkVersion = getValue(formData, "framework_version") || await getLatestActiveFrameworkVersion();
+  const currency = normalizeCurrency(getValue(formData, "currency_manual") || getValue(formData, "currency") || "USD");
   const templateSnapshot = await getActiveTemplateSnapshot();
   const now = new Date().toISOString();
   const project = {
@@ -1117,6 +1120,7 @@ export async function createExecutionProjectFromSdoaAction(formData: FormData) {
     resourceManager: getValue(formData, "resource_manager"),
     contractLegalOwner: getValue(formData, "contract_legal_owner"),
     commercialOwner: getValue(formData, "commercial_owner"),
+    currency,
     frameworkVersion,
     templateVersionSet: JSON.stringify(templateSnapshot.map((template) => ({ id: template.templateId, type: template.templateType, version: template.version }))),
     milestonePlan: getValue(formData, "milestone_plan"),
@@ -1942,7 +1946,7 @@ export async function createInvoiceDraftAction(formData: FormData) {
       invoiceNumber: getValue(formData, "invoice_number") || `INV-${shortId()}`,
       invoiceDate: dateOrNull(getValue(formData, "invoice_date")),
       dueDate: dateOrNull(getValue(formData, "due_date")),
-      currency: getValue(formData, "currency") || "IDR",
+      currency: normalizeCurrency(getValue(formData, "currency_manual") || getValue(formData, "currency") || project?.currency || "USD"),
       subtotal,
       taxAmount: tax,
       managementFeeAmount: management,
@@ -2281,4 +2285,13 @@ function cell(row: Record<string, unknown>, name: string) {
 
 function toCamel(value: string) {
   return value.trim().replace(/[_\s-]+([a-zA-Z0-9])/g, (_, char: string) => char.toUpperCase()).replace(/^[A-Z]/, (char) => char.toLowerCase());
+}
+
+function normalizeCurrency(value: string) {
+  const normalized = value.trim().toUpperCase().replace(/[^A-Z]/g, "");
+  if (!normalized) return "USD";
+  if (normalized.length !== 3) {
+    throw new Error("Currency must be a 3-letter ISO code, e.g. USD, IDR, SGD.");
+  }
+  return normalized;
 }

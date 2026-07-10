@@ -88,8 +88,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -148,7 +150,7 @@ export function DashboardClient({
 
   const role = data.user?.role_id as RoleId;
   const nav = getNav(role, isSuperAdmin);
-  const activeSection = nav.some((item) => item.id === section) ? section : "home";
+  const activeSection = nav.some((item) => item.id === section) ? section : nav[0]?.id || "home";
   const filteredProjectsForCandidate = useMemo(
     () => data.projects.filter((project) => !clientForCandidate || project.meta === clientForCandidate),
     [data.projects, clientForCandidate],
@@ -1130,12 +1132,39 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
 function OpportunityFormCard({ title, children }: { title: string; children: ReactNode }) {
   return (
     <Card className="mb-4">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
+      <CardContent className="flex items-center justify-between gap-4 p-4">
+        <div>
+          <div className="font-medium">{title}</div>
+          <div className="text-sm text-muted-foreground">Open a controlled form, then save or cancel.</div>
+        </div>
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button type="button"><Plus className="h-4 w-4" /> {actionLabel(title)}</Button>
+          </DialogTrigger>
+          <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{title}</DialogTitle>
+              <DialogDescription>Complete the required fields and save. Use Cancel to close without changes.</DialogDescription>
+            </DialogHeader>
+            {children}
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">Cancel</Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
     </Card>
   );
+}
+
+function actionLabel(title: string) {
+  if (/import/i.test(title)) return "Import";
+  if (/upload/i.test(title)) return "Upload";
+  if (/add/i.test(title)) return "Add";
+  if (/create/i.test(title)) return "Create";
+  return "Open";
 }
 
 function OpportunitySelect({ opportunities }: { opportunities: { id: string; label: string }[] }) {
@@ -1404,6 +1433,8 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
   const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
   const approvedSdoa = analysis.sdoaRecords.filter((sdoa) => ["acknowledged", "approved", "accepted"].includes(sdoa.outcome));
   const projectOptions = execution.projects.map((project) => ({ id: project.projectId, label: `${project.projectId} - ${project.customer}` }));
+  const projectCurrencies = execution.projects.map((project) => project.currency || "USD");
+  const executionCurrency = uniqueCurrencies(projectCurrencies).length === 1 ? uniqueCurrencies(projectCurrencies)[0] : "";
   const netSales = execution.projects.reduce((sum, project) => sum + Number(project.netSalesEstimate || 0), 0);
   const resourceGaps = execution.resourceDemands.filter((demand) => demand.gapStatus !== "filled").length;
   const commercialPending = execution.commercialFlows.filter((flow) => !["approved", "closed"].includes(flow.approvalStatus)).length;
@@ -1418,9 +1449,9 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         <MetricCard label="Execution Projects" value={String(execution.projects.length)} />
         <MetricCard label="Gate Requests" value={String(execution.gates.filter((gate) => gate.approvalStatus === "requested").length)} />
         <MetricCard label="Loaded Sites" value={String(execution.sites.length)} />
-        <MetricCard label="Net Sales Estimate" value={money(String(netSales))} />
+        <MetricCard label="Net Sales Estimate" value={money(String(netSales), executionCurrency)} />
         <MetricCard label="Approved CR" value={String(approvedCrCount)} />
-        <MetricCard label="CR Add-on Sales" value={money(String(crAddOnSales))} />
+        <MetricCard label="CR Add-on Sales" value={money(String(crAddOnSales), executionCurrency)} />
         <MetricCard label="Resource Gaps" value={String(resourceGaps)} />
         <MetricCard label="Commercial Pending" value={String(commercialPending)} />
       </div>
@@ -1451,6 +1482,8 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
               <Input name="resource_manager" placeholder="Resource Manager" />
               <Input name="contract_legal_owner" placeholder="Contract / Legal owner" />
               <Input name="commercial_owner" placeholder="Commercial owner" />
+              <NativeSelect name="currency" options={currencyOptions(data.projects)} emptyLabel="Project currency" />
+              <Input name="currency_manual" placeholder="Add new currency manually, e.g. JPY" maxLength={3} />
               <Input name="framework_version" placeholder="Framework version optional" />
               <Textarea name="milestone_plan" placeholder="Milestone plan" />
               <Textarea name="site_cluster_configuration" placeholder="Site / cluster configuration" />
@@ -1461,7 +1494,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
             </form>
           </OpportunityFormCard>
           <DataTable
-            headers={["Project", "Opportunity", "SDOA", "Customer", "Leader", "Sponsor", "Framework", "Net Sales", "CR Budget", "CR Revenue", "Status"]}
+            headers={["Project", "Opportunity", "SDOA", "Customer", "Leader", "Sponsor", "Currency", "Framework", "Net Sales", "CR Budget", "CR Revenue", "Status"]}
             rows={execution.projects}
             render={(project) => (
               <TableRow key={project.projectId}>
@@ -1471,10 +1504,11 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
                 <TableCell>{project.customer}</TableCell>
                 <TableCell>{project.projectLeader}</TableCell>
                 <TableCell>{project.sponsor}</TableCell>
+                <TableCell>{project.currency || "USD"}</TableCell>
                 <TableCell>{project.frameworkVersion}</TableCell>
-                <TableCell>{money(project.netSalesEstimate)}</TableCell>
-                <TableCell>{money(project.additionalBudget || "0")}</TableCell>
-                <TableCell>{money(project.additionalRevenue || "0")}</TableCell>
+                <TableCell>{money(project.netSalesEstimate, project.currency)}</TableCell>
+                <TableCell>{money(project.additionalBudget || "0", project.currency)}</TableCell>
+                <TableCell>{money(project.additionalRevenue || "0", project.currency)}</TableCell>
                 <TableCell><StatusBadge value={project.status} /></TableCell>
               </TableRow>
             )}
@@ -2177,15 +2211,11 @@ function MasterSetup({
   clientForProject: string;
   setClientForProject: (value: string) => void;
 }) {
+  const currencies = currencyOptions(projects);
   return (
     <section className="grid gap-5">
       <div className="grid grid-cols-2 gap-5 max-lg:grid-cols-1">
-        <Card>
-          <CardHeader>
-            <CardTitle>New Client</CardTitle>
-            <CardDescription>Create client master data before assigning candidates or users.</CardDescription>
-          </CardHeader>
-          <CardContent>
+        <OpportunityFormCard title="Create Client">
             <form action={createClientAction} className="grid gap-3">
               <Input name="client_id" placeholder="Client ID, optional auto-generated" />
               <Input name="client_name" placeholder="Client name" required />
@@ -2194,14 +2224,8 @@ function MasterSetup({
               <Input name="primary_contact_email" placeholder="Primary contact email" />
               <Button type="submit"><Plus className="h-4 w-4" /> Create Client</Button>
             </form>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>New Project</CardTitle>
-            <CardDescription>Projects are tied to a selected client and become available in intake dropdowns.</CardDescription>
-          </CardHeader>
-          <CardContent>
+        </OpportunityFormCard>
+        <OpportunityFormCard title="Create Project">
             <form action={createProjectAction} className="grid gap-3">
               <NativeSelect
                 name="client_id"
@@ -2214,11 +2238,12 @@ function MasterSetup({
               <Input name="project_id" placeholder="Project ID, optional auto-generated" />
               <Input name="project_name" placeholder="Project name" required />
               <Input name="project_code" placeholder="Project code, e.g. TECHBROS-RFOPT" required />
+              <NativeSelect name="currency" options={currencies} emptyLabel="Project currency" />
+              <Input name="currency_manual" placeholder="Add new currency manually, e.g. JPY" maxLength={3} />
               <Input name="start_date" type="date" />
               <Button type="submit"><Plus className="h-4 w-4" /> Create Project</Button>
             </form>
-          </CardContent>
-        </Card>
+        </OpportunityFormCard>
       </div>
       <Card>
         <CardHeader>
@@ -2228,7 +2253,7 @@ function MasterSetup({
         <CardContent>
           <div className="grid grid-cols-2 gap-5 max-lg:grid-cols-1">
             <MiniList title="Clients" items={clients.map((client) => `${client.id} - ${client.label}`)} />
-            <MiniList title="Projects" items={projects.map((project) => `${project.id} - ${project.label}`)} />
+            <MiniList title="Projects" items={projects.map((project) => `${project.id} - ${project.label} (${project.currency || "USD"})`)} />
           </div>
         </CardContent>
       </Card>
@@ -2254,12 +2279,7 @@ function CandidatePanel({
   const canEditCandidate = user?.role_id === "ROLE_SUPER_ADMIN" || user?.role_id === "ROLE_NEXUS_ADMIN";
   return (
     <section className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>Create Candidate</CardTitle>
-          <CardDescription>Client and project selection uses database-backed dropdowns.</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <OpportunityFormCard title="Create Candidate">
           <form action={createCandidateAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             <Input name="full_name" placeholder="Full name" required />
             <Input name="email" placeholder="Email" type="email" required />
@@ -2279,8 +2299,7 @@ function CandidatePanel({
               <Plus className="h-4 w-4" /> Create Candidate
             </Button>
           </form>
-        </CardContent>
-      </Card>
+      </OpportunityFormCard>
       <Card>
         <CardHeader>
           <CardTitle>Recent Candidates</CardTitle>
@@ -3031,12 +3050,7 @@ function TimesheetsPanel({
 
   return (
     <section className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>Timesheet Submission</CardTitle>
-          <CardDescription>Submit period totals and route approval status through Apps Script.</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <OpportunityFormCard title="Submit Timesheet">
           <form action={createTimesheetAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             {isEmployee ? (
               <input name="employee_id" type="hidden" value={selfEmployeeId} />
@@ -3053,8 +3067,7 @@ function TimesheetsPanel({
               <Plus className="h-4 w-4" /> Submit Timesheet
             </Button>
           </form>
-        </CardContent>
-      </Card>
+      </OpportunityFormCard>
       <Card>
         <CardHeader>
           <CardTitle>Timesheets</CardTitle>
@@ -3133,12 +3146,7 @@ function OvertimePanel({
 
   return (
     <section className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>Overtime Requests</CardTitle>
-          <CardDescription>Request, validate, and client-approve overtime.</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <OpportunityFormCard title="Submit Overtime">
           <form action={createOvertimeRequestAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             {isEmployee ? (
               <input name="employee_id" type="hidden" value={selfEmployeeId} />
@@ -3153,8 +3161,7 @@ function OvertimePanel({
               <Plus className="h-4 w-4" /> Submit Overtime
             </Button>
           </form>
-        </CardContent>
-      </Card>
+      </OpportunityFormCard>
       <Card>
         <CardHeader>
           <CardTitle>Overtime Register</CardTitle>
@@ -3230,12 +3237,7 @@ function LeavePanel({
 
   return (
     <section className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>Leave Requests</CardTitle>
-          <CardDescription>Submit leave and capture HR/client approvals.</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <OpportunityFormCard title="Submit Leave">
           <form action={createLeaveRequestAction} className="grid grid-cols-6 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             {isEmployee ? (
               <input name="employee_id" type="hidden" value={selfEmployeeId} />
@@ -3252,8 +3254,7 @@ function LeavePanel({
             <Textarea className="xl:col-span-5" name="reason" placeholder="Reason" />
             <Button type="submit"><Plus className="h-4 w-4" /> Submit Leave</Button>
           </form>
-        </CardContent>
-      </Card>
+      </OpportunityFormCard>
       <Card>
         <CardHeader>
           <CardTitle>Leave Register</CardTitle>
@@ -3323,6 +3324,13 @@ function FinancePanel({
   grRecords: RecordMap[];
   invoices: RecordMap[];
 }) {
+  const [invoiceProjectId, setInvoiceProjectId] = useState(projects[0]?.id || "");
+  const [invoiceCurrency, setInvoiceCurrency] = useState(projects[0]?.currency || "USD");
+  const currencies = currencyOptions(projects);
+  const handleInvoiceProjectChange = (projectId: string) => {
+    setInvoiceProjectId(projectId);
+    setInvoiceCurrency(projects.find((project) => project.id === projectId)?.currency || "USD");
+  };
   return (
     <Tabs defaultValue="gr">
       <TabsList>
@@ -3336,6 +3344,7 @@ function FinancePanel({
             <CardDescription>Create service acceptance records from approved work.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5">
+            <OpportunityFormCard title="Create GR Record">
             <form action={createGrRecordAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <NativeSelect name="client_id" options={clients} emptyLabel="Client" required />
               <NativeSelect name="project_id" options={projects} emptyLabel="Project" required />
@@ -3353,6 +3362,7 @@ function FinancePanel({
               <Textarea className="xl:col-span-4" name="work_summary" placeholder="Work summary" />
               <Button type="submit"><Plus className="h-4 w-4" /> Create GR</Button>
             </form>
+            </OpportunityFormCard>
             <DataTable
               headers={["ID", "Client", "Project", "Period", "Acceptance", "Status"]}
               rows={grRecords}
@@ -3377,14 +3387,16 @@ function FinancePanel({
             <CardDescription>Create draft invoices from GR records and track payment status.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5">
+            <OpportunityFormCard title="Create Invoice">
             <form action={createInvoiceDraftAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <NativeSelect name="gr_id" options={toOptions(grRecords, "gr_id", "period_month")} emptyLabel="GR record" required />
               <NativeSelect name="client_id" options={clients} emptyLabel="Client" required />
-              <NativeSelect name="project_id" options={projects} emptyLabel="Project optional" />
+              <NativeSelect name="project_id" value={invoiceProjectId} onValueChange={handleInvoiceProjectChange} options={projects} emptyLabel="Project optional" />
               <Input name="invoice_number" placeholder="Invoice number" />
               <Input name="invoice_date" type="date" />
               <Input name="due_date" type="date" />
-              <Input name="currency" defaultValue="IDR" placeholder="Currency" />
+              <NativeSelect name="currency" value={invoiceCurrency} onValueChange={setInvoiceCurrency} options={currencies} emptyLabel="Invoice currency" />
+              <Input name="currency_manual" placeholder="Override currency, e.g. JPY" maxLength={3} />
               <Input name="subtotal" type="number" min="0" placeholder="Subtotal" />
               <Input name="tax_amount" type="number" min="0" placeholder="Tax" />
               <Input name="management_fee_amount" type="number" min="0" placeholder="Management fee" />
@@ -3398,6 +3410,7 @@ function FinancePanel({
                 <Plus className="h-4 w-4" /> Create Invoice
               </Button>
             </form>
+            </OpportunityFormCard>
             <DataTable
               headers={["ID", "Invoice", "Client", "Subtotal", "Fees", "Tax/BPJS", "Total", "Status"]}
               rows={invoices}
@@ -3406,17 +3419,17 @@ function FinancePanel({
                   <TableCell className="font-mono text-xs">{row.invoice_id}</TableCell>
                   <TableCell>{row.invoice_number || "-"}</TableCell>
                   <TableCell>{row.client_id}</TableCell>
-                  <TableCell>{money(row.subtotal)}</TableCell>
+                  <TableCell>{money(row.subtotal, row.currency)}</TableCell>
                   <TableCell>
-                    <div>Mgmt {money(row.management_fee_amount)}</div>
-                    <div className="text-xs text-muted-foreground">Recruit {money(row.recruitment_fee)}</div>
+                    <div>Mgmt {money(row.management_fee_amount, row.currency)}</div>
+                    <div className="text-xs text-muted-foreground">Recruit {money(row.recruitment_fee, row.currency)}</div>
                   </TableCell>
                   <TableCell>
-                    <div>Tax {money(row.tax_amount)}</div>
-                    <div className="text-xs text-muted-foreground">P21 {money(row.pph21_amount)} / P23 {money(row.pph23_amount)}</div>
-                    <div className="text-xs text-muted-foreground">BPJS {money(row.bpjs_kesehatan_amount)} / {money(row.bpjs_tk_amount)}</div>
+                    <div>Tax {money(row.tax_amount, row.currency)}</div>
+                    <div className="text-xs text-muted-foreground">P21 {money(row.pph21_amount, row.currency)} / P23 {money(row.pph23_amount, row.currency)}</div>
+                    <div className="text-xs text-muted-foreground">BPJS {money(row.bpjs_kesehatan_amount, row.currency)} / {money(row.bpjs_tk_amount, row.currency)}</div>
                   </TableCell>
-                  <TableCell>{row.currency || "IDR"} {money(row.total_amount)}</TableCell>
+                  <TableCell>{money(row.total_amount, row.currency)}</TableCell>
                   <TableCell><StatusBadge value={row.invoice_status} /></TableCell>
                 </TableRow>
               )}
@@ -3558,11 +3571,34 @@ function NativeSelect({
 }
 
 function RoleSelect() {
+  const roles: RoleId[] = [
+    "ROLE_SUPER_ADMIN",
+    "ROLE_NEXUS_ADMIN",
+    "ROLE_FRAMEWORK_ADMIN",
+    "ROLE_TEMPLATE_ADMIN",
+    "ROLE_ACCOUNT_MANAGER",
+    "ROLE_SOLUTION_ARCHITECT",
+    "ROLE_COMMERCIAL_MANAGER",
+    "ROLE_CONTRACT_LEGAL",
+    "ROLE_SPONSOR",
+    "ROLE_PROGRAM_DIRECTOR",
+    "ROLE_PROJECT_MANAGER",
+    "ROLE_PROJECT_FINANCE_MANAGER",
+    "ROLE_RESOURCE_MANAGER",
+    "ROLE_HR_ADMIN",
+    "ROLE_HR_ADMINISTRATOR",
+    "ROLE_FINANCE_CONTROLLER",
+    "ROLE_CLIENT_APPROVER",
+    "ROLE_CLIENT_FINANCE_VIEWER",
+    "ROLE_EMPLOYEE",
+    "ROLE_VIEWER",
+    "ROLE_AUDITOR",
+  ];
   return (
     <Select name="role_id" required>
       <SelectTrigger><SelectValue placeholder="Role" /></SelectTrigger>
       <SelectContent>
-      {["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_HR_ADMIN", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE", "ROLE_CLIENT_FINANCE_VIEWER"].map((role) => (
+      {roles.map((role) => (
         <SelectItem key={role} value={role}>{role}</SelectItem>
       ))}
       </SelectContent>
@@ -3651,14 +3687,33 @@ function formatDateTime(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function money(value?: string) {
+function money(value?: string, currency?: string) {
   const amount = Number(String(value || "0").replace(/,/g, ""));
   if (!Number.isFinite(amount)) return value || "-";
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    maximumFractionDigits: 0,
-  }).format(amount);
+  if (!currency) {
+    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(amount);
+  }
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: currency === "IDR" ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `${currency} ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(amount)}`;
+  }
+}
+
+function uniqueCurrencies(values: Array<string | undefined>) {
+  return Array.from(new Set(values.map((value) => (value || "").toUpperCase()).filter(Boolean)));
+}
+
+function currencyOptions(projects: DashboardData["projects"] = []) {
+  const base = ["USD", "EUR", "IDR", "SGD", "AUD", "THB"];
+  return uniqueCurrencies([...base, ...projects.map((project) => project.currency)]).map((currency) => ({
+    id: currency,
+    label: currency,
+  }));
 }
 
 function avg(values: number[]) {
@@ -3694,41 +3749,31 @@ function coerceSection(value?: string): Section {
 }
 
 function getNav(role: RoleId, isOwner: boolean): { id: Section; label: string; icon: ReactNode; roles: RoleId[] }[] {
-  const allRoles: RoleId[] = [
+  const opsDashboardRoles: RoleId[] = [
     "ROLE_SUPER_ADMIN",
     "ROLE_NEXUS_ADMIN",
     "ROLE_FRAMEWORK_ADMIN",
     "ROLE_TEMPLATE_ADMIN",
-    "ROLE_ACCOUNT_MANAGER",
-    "ROLE_SOLUTION_ARCHITECT",
-    "ROLE_COMMERCIAL_MANAGER",
-    "ROLE_CONTRACT_LEGAL",
-    "ROLE_SPONSOR",
-    "ROLE_PROGRAM_DIRECTOR",
-    "ROLE_PROJECT_MANAGER",
     "ROLE_RESOURCE_MANAGER",
-    "ROLE_PROJECT_FINANCE_MANAGER",
-    "ROLE_SUPPLY_MANAGER",
-    "ROLE_PROCUREMENT_MANAGER",
     "ROLE_HR_ADMIN",
     "ROLE_HR_ADMINISTRATOR",
     "ROLE_FINANCE_CONTROLLER",
-    "ROLE_VIEWER",
-    "ROLE_AUDITOR",
     "ROLE_PAYROLL_ADMIN_OPS",
     "ROLE_CLIENT_APPROVER",
     "ROLE_CLIENT_FINANCE_VIEWER",
     "ROLE_EMPLOYEE",
+    "ROLE_VIEWER",
+    "ROLE_AUDITOR",
   ];
   const nav: { id: Section; label: string; icon: ReactNode; roles: RoleId[] }[] = [
-    { id: "home" as const, label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" />, roles: allRoles },
+    { id: "home" as const, label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" />, roles: opsDashboardRoles },
     { id: "control" as const, label: "Admin Control Plane", icon: <Settings className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_TEMPLATE_ADMIN", "ROLE_AUDITOR"] },
     { id: "opportunity" as const, label: "Opportunity Analysis", icon: <Target className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_SOLUTION_ARCHITECT", "ROLE_COMMERCIAL_MANAGER", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_VIEWER"] },
     { id: "cashflow" as const, label: "Cashflow Analysis", icon: <DollarSign className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_SPONSOR", "ROLE_VIEWER"] },
-    { id: "sales_submission" as const, label: "Sales Decision Submission", icon: <Send className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_SOLUTION_ARCHITECT", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_SPONSOR"] },
-    { id: "order_ack" as const, label: "Order Acknowledgement", icon: <Handshake className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_CONTRACT_LEGAL", "ROLE_PROGRAM_DIRECTOR", "ROLE_SPONSOR"] },
-    { id: "execution" as const, label: "Project Governance", icon: <ClipboardCheck className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_MANAGER", "ROLE_RESOURCE_MANAGER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_SUPPLY_MANAGER", "ROLE_PROCUREMENT_MANAGER", "ROLE_CLIENT_APPROVER", "ROLE_VIEWER"] },
-    { id: "governance" as const, label: "IDBGF Governance", icon: <ShieldCheck className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_MANAGER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_CLIENT_APPROVER", "ROLE_AUDITOR", "ROLE_VIEWER"] },
+    { id: "sales_submission" as const, label: "Sales Decision Submission", icon: <Send className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_SOLUTION_ARCHITECT", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_MANAGER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_SPONSOR"] },
+    { id: "order_ack" as const, label: "Order Acknowledgement", icon: <Handshake className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_SOLUTION_ARCHITECT", "ROLE_COMMERCIAL_MANAGER", "ROLE_CONTRACT_LEGAL", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_MANAGER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_SPONSOR"] },
+    { id: "execution" as const, label: "Project Governance", icon: <ClipboardCheck className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_MANAGER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_RESOURCE_MANAGER", "ROLE_SUPPLY_MANAGER", "ROLE_PROCUREMENT_MANAGER", "ROLE_VIEWER"] },
+    { id: "governance" as const, label: "IDBGF Governance", icon: <ShieldCheck className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_MANAGER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_AUDITOR", "ROLE_VIEWER"] },
     { id: "talent" as const, label: "Talent Planning", icon: <Users className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_SUPPLY_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PROGRAM_DIRECTOR"] },
     { id: "ratecard" as const, label: "Ratecard & Costing", icon: <ReceiptText className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PAYROLL_ADMIN_OPS"] },
     { id: "users" as const, label: "Users", icon: <Users className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_FRAMEWORK_ADMIN"] },
@@ -3737,9 +3782,9 @@ function getNav(role: RoleId, isOwner: boolean): { id: Section; label: string; i
     { id: "feedback" as const, label: "Client Feedback", icon: <ClipboardCheck className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_CLIENT_APPROVER"] },
     { id: "onboarding" as const, label: "Resource Onboarding", icon: <CheckCircle2 className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
     { id: "documents" as const, label: "Documents", icon: <FolderOpen className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_TEMPLATE_ADMIN", "ROLE_AUDITOR"] },
-    { id: "timesheets" as const, label: "Timesheets", icon: <Timer className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
-    { id: "overtime" as const, label: "Overtime", icon: <ClockIcon />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
-    { id: "leave" as const, label: "Leave", icon: <CalendarDays className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
+    { id: "timesheets" as const, label: "Timesheets", icon: <Timer className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
+    { id: "overtime" as const, label: "Overtime", icon: <ClockIcon />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
+    { id: "leave" as const, label: "Leave", icon: <CalendarDays className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
     { id: "finance" as const, label: "GR & Invoices", icon: <ReceiptText className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_FINANCE_VIEWER"] },
   ];
   return nav.filter((item) => isOwner || item.roles.includes(role));

@@ -184,6 +184,7 @@ model Project {
   client         Client               @relation(fields: [clientId], references: [id])
   code           String
   name           String
+  currency       String               @default("USD")
   startDate      DateTime?
   endDate        DateTime?
   status         String               @default("active")
