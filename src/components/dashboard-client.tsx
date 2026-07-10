@@ -356,8 +356,8 @@ function Home({ data }: { data: DashboardData }) {
         <ShieldCheck className="float-left me-2 h-4 w-4 text-blue-600" />
         <AlertTitle>Backend enforced access</AlertTitle>
         <AlertDescription>
-          Role, client scope, audit log, and workflow validation stay inside Google Apps Script. This interface only
-          provides a structured workspace.
+          Role, client scope, audit log, and workflow validation are enforced by the Next.js server and Neon database.
+          Google Apps Script is used only as the Google Drive repository adapter.
         </AlertDescription>
       </Alert>
       <Card>
@@ -373,7 +373,7 @@ function Home({ data }: { data: DashboardData }) {
                   {index + 1}
                 </div>
                 <div className="font-medium">{step}</div>
-                <div className="mt-1 text-muted-foreground">Operational data remains in Sheets through GAS.</div>
+                <div className="mt-1 text-muted-foreground">Operational data is stored in Sevenfold PostgreSQL.</div>
               </div>
             ))}
           </div>

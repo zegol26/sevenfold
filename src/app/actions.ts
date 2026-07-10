@@ -293,7 +293,7 @@ export async function updateUserAction(formData: FormData) {
 
 export async function seedFrameworkControlPlaneAction() {
   const { user: actor } = await currentActor();
-  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
+  requireActorRole(actor, ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
   const value = { ...defaultFrameworkControlPlane(), updatedAt: new Date().toISOString() };
   const setting = await getDb().systemSetting.upsert({
     where: { key: "sevenfold.control_plane" },
