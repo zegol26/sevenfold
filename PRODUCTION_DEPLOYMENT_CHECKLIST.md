@@ -31,6 +31,9 @@ Verify in Vercel Project Settings only. Do not commit `.env.local`.
 - [ ] Any auth provider keys currently used by the deployed stack
 - [ ] No local-only URLs such as `127.0.0.1` or `localhost`
 - [ ] No test passwords, service account JSON, or key text files committed
+- [ ] Sevenfold uses its own Neon database, branch, or schema.
+- [ ] If sharing a Neon database with another Nexus app, `DATABASE_URL` must include an isolated schema parameter such as `schema=nexus_sevenfold`.
+- [ ] Never point Sevenfold at the existing Nexus Platform default schema unless a reviewed migration plan explicitly approves it.
 
 Secret-safe files that must stay ignored:
 
@@ -45,6 +48,8 @@ Secret-safe files that must stay ignored:
 
 - [ ] Review Prisma schema diff.
 - [ ] Confirm migration is additive.
+- [ ] Confirm the target Neon connection points to the Sevenfold schema/database only.
+- [ ] Confirm Prisma migration history table will be created for Sevenfold, not reused from another Nexus Platform app.
 - [ ] Confirm no table drop.
 - [ ] Confirm no column drop.
 - [ ] Confirm no destructive default or required field that can fail existing rows.
