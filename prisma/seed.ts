@@ -73,19 +73,28 @@ async function main() {
   const orgId = organization.id;
 
   const superRole = await prisma.role.findUniqueOrThrow({ where: { code: "ROLE_SUPER_ADMIN" } });
-  const passwordHash = await bcrypt.hash(process.env.SEVENFOLD_SUPER_ADMIN_PASSWORD || "ChangeMeNow!2026", 12);
-  for (const email of ["nexustalentaindonesia@gmail.com", "zegol26@gmail.com"]) {
+  const superAdminPassword = process.env.SEVENFOLD_SUPER_ADMIN_PASSWORD;
+  if (!superAdminPassword) {
+    throw new Error("SEVENFOLD_SUPER_ADMIN_PASSWORD must be set before seeding (no hardcoded fallback).");
+  }
+  const superAdminEmails = (process.env.SEVENFOLD_SUPER_ADMIN_EMAILS || "").split(",").map((email) => email.trim()).filter(Boolean);
+  if (superAdminEmails.length === 0) {
+    throw new Error("SEVENFOLD_SUPER_ADMIN_EMAILS must be set to a comma-separated list before seeding.");
+  }
+  const passwordHash = await bcrypt.hash(superAdminPassword, 12);
+  for (const [index, email] of superAdminEmails.entries()) {
+    const localPart = email.split("@")[0];
     await prisma.user.upsert({
       where: { organizationId_email: { organizationId: orgId, email } },
       update: { roleId: superRole.id, status: "ACTIVE" },
       create: {
         organizationId: orgId,
         email,
-        fullName: email.startsWith("nexus") ? "Nexus Talenta Indonesia" : "Zegol Super Admin",
+        fullName: `${localPart} Super Admin`,
         roleId: superRole.id,
         status: "ACTIVE",
         passwordHash,
-        legacySourceId: email.startsWith("nexus") ? "USR-NEXUS-SUPER-ADMIN-001" : "USR-SUPER-ADMIN-001",
+        legacySourceId: `USR-SUPER-ADMIN-${String(index + 1).padStart(3, "0")}`,
       },
     });
   }
