@@ -17,8 +17,8 @@ export const REQUIRED_PROJECT_GATES = [
 ] as const;
 
 export const getProjectExecutionRegistry = unstable_cache(
-  async (): Promise<ProjectExecutionRegistry> => {
-    const setting = await getDb().systemSetting.findUnique({ where: { key: PROJECT_EXECUTION_KEY } });
+  async (organizationId: string): Promise<ProjectExecutionRegistry> => {
+    const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: PROJECT_EXECUTION_KEY } } });
     if (!setting) return emptyProjectExecutionRegistry();
     const value = setting.value as Partial<ProjectExecutionRegistry>;
     return {
@@ -34,8 +34,8 @@ export const getProjectExecutionRegistry = unstable_cache(
   { revalidate: 300, tags: [PROJECT_EXECUTION_CACHE_TAG] },
 );
 
-export async function getProjectExecutionRegistryForMutation(): Promise<ProjectExecutionRegistry> {
-  const setting = await getDb().systemSetting.findUnique({ where: { key: PROJECT_EXECUTION_KEY } });
+export async function getProjectExecutionRegistryForMutation(organizationId: string): Promise<ProjectExecutionRegistry> {
+  const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: PROJECT_EXECUTION_KEY } } });
   if (!setting) return emptyProjectExecutionRegistry();
   const value = setting.value as Partial<ProjectExecutionRegistry>;
   return {
@@ -47,11 +47,12 @@ export async function getProjectExecutionRegistryForMutation(): Promise<ProjectE
   };
 }
 
-export async function saveProjectExecutionRegistry(value: ProjectExecutionRegistry) {
+export async function saveProjectExecutionRegistry(organizationId: string, value: ProjectExecutionRegistry) {
   const nextValue = { ...value, updatedAt: new Date().toISOString() };
   await getDb().systemSetting.upsert({
-    where: { key: PROJECT_EXECUTION_KEY },
+    where: { organizationId_key: { organizationId, key: PROJECT_EXECUTION_KEY } },
     create: {
+      organizationId,
       key: PROJECT_EXECUTION_KEY,
       value: nextValue,
       description: "Sevenfold Project Execution, gate, and site handler registry.",
@@ -62,9 +63,9 @@ export async function saveProjectExecutionRegistry(value: ProjectExecutionRegist
   revalidateTag(PROJECT_EXECUTION_CACHE_TAG, "max");
 }
 
-export async function sdoaIsApproved(sdoaId: string) {
+export async function sdoaIsApproved(organizationId: string, sdoaId: string) {
   try {
-    const sdoa = await getDb().orderAcknowledgement.findUnique({ where: { id: sdoaId } });
+    const sdoa = await getDb().orderAcknowledgement.findFirst({ where: { id: sdoaId, opportunity: { organizationId } } });
     return Boolean(sdoa && ["acknowledged", "approved", "accepted"].includes(sdoa.outcome));
   } catch (error) {
     if (isMissingPrismaTableError(error)) return false;

@@ -2,8 +2,9 @@
 
 import { revalidatePath, revalidateTag } from "next/cache";
 import { redirect } from "next/navigation";
-import { InvoiceStatus, ResourceKind, UserStatus } from "@prisma/client";
+import { InvoiceStatus, Prisma, ResourceKind, UserStatus } from "@prisma/client";
 import * as XLSX from "xlsx";
+import { calculateCashflow } from "@/lib/cashflowEngine";
 import { getDb } from "@/lib/db";
 import { defaultFrameworkControlPlane } from "@/lib/framework-defaults";
 import { hashPassword, verifyPassword } from "@/lib/password";
@@ -88,16 +89,25 @@ async function currentActor() {
   return { session, user };
 }
 
-async function findResourceByLegacyId(legacySourceId: string, kind?: ResourceKind) {
-  return getDb().resource.findFirst({ where: { legacySourceId, ...(kind ? { kind } : {}) } });
+// Every organization-scoped service call must be given this instead of assuming an org
+// context. Throws for platform-admin-only sessions, which aren't tied to one tenant.
+function requireOrganizationId(actor: { organizationId: string | null } | null | undefined): string {
+  if (!actor?.organizationId) {
+    throw new Error("This action requires a tenant-scoped user, not a platform admin.");
+  }
+  return actor.organizationId;
 }
 
-async function findClientByLegacyId(id: string) {
-  return getDb().client.findFirst({ where: { OR: [{ legacySourceId: id }, { code: id }] } });
+async function findResourceByLegacyId(organizationId: string, legacySourceId: string, kind?: ResourceKind) {
+  return getDb().resource.findFirst({ where: { organizationId, legacySourceId, ...(kind ? { kind } : {}) } });
 }
 
-async function findProjectByLegacyId(id: string) {
-  return getDb().project.findFirst({ where: { OR: [{ legacySourceId: id }, { code: id }] } });
+async function findClientByLegacyId(organizationId: string, id: string) {
+  return getDb().client.findFirst({ where: { organizationId, OR: [{ legacySourceId: id }, { code: id }] } });
+}
+
+async function findProjectByLegacyId(organizationId: string, id: string) {
+  return getDb().project.findFirst({ where: { client: { organizationId }, OR: [{ legacySourceId: id }, { code: id }] } });
 }
 
 function actorRole(actor: Awaited<ReturnType<typeof currentActor>>["user"]) {
@@ -224,6 +234,7 @@ export async function logoutAction() {
 
 export async function createUserAction(formData: FormData) {
   const { user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
 
   const tempPassword = getValue(formData, "temporary_password");
   requireValue(tempPassword, "Temporary password");
@@ -232,10 +243,11 @@ export async function createUserAction(formData: FormData) {
   if (!role) throw new Error("Role not found");
   const clientId = getValue(formData, "client_id");
   const employeeId = getValue(formData, "employee_id");
-  const client = clientId ? await findClientByLegacyId(clientId) : null;
-  const employee = employeeId ? await findResourceByLegacyId(employeeId) : null;
+  const client = clientId ? await findClientByLegacyId(organizationId, clientId) : null;
+  const employee = employeeId ? await findResourceByLegacyId(organizationId, employeeId) : null;
   const created = await getDb().user.create({
     data: {
+      organizationId,
       legacySourceId: generatedLegacyId("USR"),
       email,
       fullName: getValue(formData, "full_name"),
@@ -258,6 +270,7 @@ export async function createUserAction(formData: FormData) {
 
 export async function updateUserAction(formData: FormData) {
   const { user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
 
   const password = getValue(formData, "temporary_password");
   const userId = getValue(formData, "user_id");
@@ -267,8 +280,8 @@ export async function updateUserAction(formData: FormData) {
   if (!role) throw new Error("Role not found");
   const clientId = getValue(formData, "client_id");
   const employeeId = getValue(formData, "employee_id");
-  const client = clientId ? await findClientByLegacyId(clientId) : null;
-  const employee = employeeId ? await findResourceByLegacyId(employeeId) : null;
+  const client = clientId ? await findClientByLegacyId(organizationId, clientId) : null;
+  const employee = employeeId ? await findResourceByLegacyId(organizationId, employeeId) : null;
   const updated = await getDb().user.update({
     where: { id: target.id },
     data: {
@@ -294,10 +307,12 @@ export async function updateUserAction(formData: FormData) {
 export async function seedFrameworkControlPlaneAction() {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
+  const organizationId = requireOrganizationId(actor);
   const value = { ...defaultFrameworkControlPlane(), updatedAt: new Date().toISOString() };
   const setting = await getDb().systemSetting.upsert({
-    where: { key: "sevenfold.control_plane" },
+    where: { organizationId_key: { organizationId, key: "sevenfold.control_plane" } },
     create: {
+      organizationId,
       key: "sevenfold.control_plane",
       value,
       description: "Sevenfold Administration Control Plane defaults from business_plan rev2.",
@@ -313,8 +328,9 @@ export async function seedFrameworkControlPlaneAction() {
 export async function addFrameworkItemAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
+  const organizationId = requireOrganizationId(actor);
   const group = getValue(formData, "group") as keyof FrameworkControlPlane;
-  const current = await getFrameworkControlPlaneForAction();
+  const current = await getFrameworkControlPlaneForAction(organizationId);
   const reason = getValue(formData, "reason") || "Admin Control Plane update";
   const approvalReference = getValue(formData, "approval_reference");
   const before = JSON.parse(JSON.stringify(current)) as FrameworkControlPlane;
@@ -516,17 +532,19 @@ export async function addFrameworkItemAction(formData: FormData) {
   } else {
     throw new Error("Unsupported framework setting group.");
   }
-  await saveFrameworkControlPlaneForAction(current, actor?.id, `ADD_FRAMEWORK_${String(group).toUpperCase()}`, before, reason, approvalReference);
+  await saveFrameworkControlPlaneForAction(organizationId, current, actor?.id, `ADD_FRAMEWORK_${String(group).toUpperCase()}`, before, reason, approvalReference);
   revalidatePath("/");
 }
 
 export async function updateFrameworkControlPlaneJsonAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
+  const organizationId = requireOrganizationId(actor);
   const raw = getValue(formData, "framework_json");
   const parsed = JSON.parse(raw) as FrameworkControlPlane;
-  const before = await getFrameworkControlPlaneForAction();
+  const before = await getFrameworkControlPlaneForAction(organizationId);
   await saveFrameworkControlPlaneForAction(
+    organizationId,
     { ...defaultFrameworkControlPlane(), ...parsed },
     actor?.id,
     "UPDATE_FRAMEWORK_CONTROL_PLANE_JSON",
@@ -537,12 +555,13 @@ export async function updateFrameworkControlPlaneJsonAction(formData: FormData) 
   revalidatePath("/");
 }
 
-async function getFrameworkControlPlaneForAction() {
-  const setting = await getDb().systemSetting.findUnique({ where: { key: "sevenfold.control_plane" } });
+async function getFrameworkControlPlaneForAction(organizationId: string) {
+  const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: "sevenfold.control_plane" } } });
   return setting ? ({ ...defaultFrameworkControlPlane(), ...(setting.value as Partial<FrameworkControlPlane>) } as FrameworkControlPlane) : defaultFrameworkControlPlane();
 }
 
 async function saveFrameworkControlPlaneForAction(
+  organizationId: string,
   value: FrameworkControlPlane,
   actorId: string | undefined,
   action: string,
@@ -552,8 +571,9 @@ async function saveFrameworkControlPlaneForAction(
 ) {
   value.updatedAt = new Date().toISOString();
   const setting = await getDb().systemSetting.upsert({
-    where: { key: "sevenfold.control_plane" },
+    where: { organizationId_key: { organizationId, key: "sevenfold.control_plane" } },
     create: {
+      organizationId,
       key: "sevenfold.control_plane",
       value,
       description: "Sevenfold Administration Control Plane configuration.",
@@ -567,9 +587,11 @@ async function saveFrameworkControlPlaneForAction(
 
 export async function createClientAction(formData: FormData) {
   const { user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
   const code = getValue(formData, "client_code").toUpperCase();
   const client = await getDb().client.create({
     data: {
+      organizationId,
       legacySourceId: getValue(formData, "client_id") || `CLT-${code}-${shortId()}`,
       code,
       name: getValue(formData, "client_name"),
@@ -589,12 +611,13 @@ export async function createClientAction(formData: FormData) {
 
 export async function createProjectAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const client = await findClientByLegacyId(getValue(formData, "client_id"));
+  const organizationId = requireOrganizationId(actor);
+  const client = await findClientByLegacyId(organizationId, getValue(formData, "client_id"));
   if (!client) throw new Error("Client not found");
   const code = getValue(formData, "project_code").toUpperCase();
   const currency = normalizeCurrency(getValue(formData, "currency_manual") || getValue(formData, "currency") || "USD");
-  const frameworkVersion = await getLatestActiveFrameworkVersion();
-  const activeTemplateSnapshot = await getActiveTemplateSnapshot();
+  const frameworkVersion = await getLatestActiveFrameworkVersion(organizationId);
+  const activeTemplateSnapshot = await getActiveTemplateSnapshot(organizationId);
   const project = await getDb().project.create({
     data: {
       legacySourceId: getValue(formData, "project_id") || `PRJ-${code}-${shortId()}`,
@@ -608,8 +631,9 @@ export async function createProjectAction(formData: FormData) {
     },
   });
   await getDb().systemSetting.upsert({
-    where: { key: `sevenfold.entity_framework_version.project.${project.id}` },
+    where: { organizationId_key: { organizationId, key: `sevenfold.entity_framework_version.project.${project.id}` } },
     create: {
+      organizationId,
       key: `sevenfold.entity_framework_version.project.${project.id}`,
       value: {
         entityType: "project",
@@ -641,12 +665,14 @@ export async function createProjectAction(formData: FormData) {
 export async function uploadTemplateAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireTemplateAdmin(actor);
+  const organizationId = requireOrganizationId(actor);
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {
     throw new Error("Template file is required");
   }
   const buffer = Buffer.from(await file.arrayBuffer());
   await uploadTemplate({
+    organizationId,
     templateName: getValue(formData, "template_name") || file.name,
     templateType: getValue(formData, "template_type"),
     documentCategory: getValue(formData, "document_category"),
@@ -665,11 +691,13 @@ export async function uploadTemplateAction(formData: FormData) {
 export async function transitionTemplateAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireTemplateAdmin(actor);
+  const organizationId = requireOrganizationId(actor);
   const action = getValue(formData, "template_action") as "review" | "approve" | "publish" | "retire";
   if (!["review", "approve", "publish", "retire"].includes(action)) {
     throw new Error("Unsupported template action");
   }
   await transitionTemplate({
+    organizationId,
     templateId: getValue(formData, "template_id"),
     action,
     actorEmail: session.email,
@@ -682,10 +710,12 @@ export async function transitionTemplateAction(formData: FormData) {
 export async function createOpportunityAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
-  const frameworkVersion = await getLatestActiveFrameworkVersion();
+  const organizationId = requireOrganizationId(actor);
+  const frameworkVersion = await getLatestActiveFrameworkVersion(organizationId);
   const opportunityCode = getValue(formData, "opportunity_id") || generatedLegacyId("OPP");
   const opportunity = await getDb().opportunity.create({
     data: {
+      organizationId,
       opportunityCode,
       customerName: getValue(formData, "customer_name"),
       customerSegment: getValue(formData, "customer_segment") || null,
@@ -699,8 +729,9 @@ export async function createOpportunityAction(formData: FormData) {
     },
   });
   await getDb().systemSetting.upsert({
-    where: { key: `sevenfold.entity_framework_version.opportunity.${opportunity.id}` },
+    where: { organizationId_key: { organizationId, key: `sevenfold.entity_framework_version.opportunity.${opportunity.id}` } },
     create: {
+      organizationId,
       key: `sevenfold.entity_framework_version.opportunity.${opportunity.id}`,
       value: {
         entityType: "opportunity",
@@ -730,16 +761,18 @@ export async function createOpportunityAction(formData: FormData) {
 export async function cloneOpportunityAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
+  const organizationId = requireOrganizationId(actor);
   const sourceCode = getValue(formData, "source_opportunity_id");
   const source = await getDb().opportunity.findUnique({
-    where: { opportunityCode: sourceCode },
+    where: { organizationId_opportunityCode: { organizationId, opportunityCode: sourceCode } },
     include: { scenarios: { include: { commodityLines: true } }, risks: true, pricingDecisions: true },
   });
   if (!source) throw new Error("Source opportunity not found");
-  const frameworkVersion = await getLatestActiveFrameworkVersion();
+  const frameworkVersion = await getLatestActiveFrameworkVersion(organizationId);
   const cloneCode = getValue(formData, "new_opportunity_id") || generatedLegacyId("OPP");
   const clone = await getDb().opportunity.create({
     data: {
+      organizationId,
       opportunityCode: cloneCode,
       customerName: getValue(formData, "customer_name") || source.customerName,
       customerSegment: source.customerSegment,
@@ -804,8 +837,9 @@ export async function cloneOpportunityAction(formData: FormData) {
     });
   }
   await getDb().systemSetting.upsert({
-    where: { key: `sevenfold.entity_framework_version.opportunity.${clone.id}` },
+    where: { organizationId_key: { organizationId, key: `sevenfold.entity_framework_version.opportunity.${clone.id}` } },
     create: {
+      organizationId,
       key: `sevenfold.entity_framework_version.opportunity.${clone.id}`,
       value: { entityType: "opportunity", entityId: clone.id, opportunityCode: clone.opportunityCode, frameworkVersion, clonedFrom: source.opportunityCode, assignedAt: new Date().toISOString() },
       description: "Framework version assigned when opportunity was cloned.",
@@ -820,7 +854,8 @@ export async function cloneOpportunityAction(formData: FormData) {
 export async function createProposalScenarioAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SOLUTION_ARCHITECT", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER"]);
-  const opportunity = await getDb().opportunity.findUnique({ where: { opportunityCode: getValue(formData, "opportunity_id") } });
+  const organizationId = requireOrganizationId(actor);
+  const opportunity = await getDb().opportunity.findUnique({ where: { organizationId_opportunityCode: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } } });
   if (!opportunity) throw new Error("Opportunity not found");
   const scenario = await getDb().proposalScenario.create({
     data: {
@@ -839,8 +874,9 @@ export async function createProposalScenarioAction(formData: FormData) {
 export async function createCommodityCostLineAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireOpportunityManager(actor);
+  const organizationId = requireOrganizationId(actor);
   const scenario = await getDb().proposalScenario.findFirst({
-    where: { scenarioCode: getValue(formData, "scenario_id"), opportunity: { opportunityCode: getValue(formData, "opportunity_id") } },
+    where: { scenarioCode: getValue(formData, "scenario_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
     include: { commodityLines: true },
   });
   if (!scenario) throw new Error("Scenario not found");
@@ -876,7 +912,8 @@ export async function createCommodityCostLineAction(formData: FormData) {
 export async function createOpportunityRiskAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireOpportunityManager(actor);
-  const opportunity = await getDb().opportunity.findUnique({ where: { opportunityCode: getValue(formData, "opportunity_id") } });
+  const organizationId = requireOrganizationId(actor);
+  const opportunity = await getDb().opportunity.findUnique({ where: { organizationId_opportunityCode: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } } });
   if (!opportunity) throw new Error("Opportunity not found");
   const exposureBefore = moneyOrZero(getValue(formData, "exposure_before_mitigation"));
   const mitigationCost = moneyOrZero(getValue(formData, "mitigation_cost"));
@@ -906,7 +943,8 @@ export async function createOpportunityRiskAction(formData: FormData) {
 export async function createPricingDecisionAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
-  const opportunity = await getDb().opportunity.findUnique({ where: { opportunityCode: getValue(formData, "opportunity_id") } });
+  const organizationId = requireOrganizationId(actor);
+  const opportunity = await getDb().opportunity.findUnique({ where: { organizationId_opportunityCode: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } } });
   if (!opportunity) throw new Error("Opportunity not found");
   const scenario = getValue(formData, "scenario_id")
     ? await getDb().proposalScenario.findFirst({ where: { opportunityId: opportunity.id, scenarioCode: getValue(formData, "scenario_id") } })
@@ -931,33 +969,47 @@ export async function createPricingDecisionAction(formData: FormData) {
 export async function createCashflowOptionAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireCommercialManager(actor);
-  const opportunity = await getApprovedOpportunityForCashflow(getValue(formData, "opportunity_id"));
+  const organizationId = requireOrganizationId(actor);
+  const opportunity = await getApprovedOpportunityForCashflow(organizationId, getValue(formData, "opportunity_id"));
   const grossInvoice = moneyOrZero(getValue(formData, "gross_invoice"));
   const discountAmount = moneyOrZero(getValue(formData, "incentive_discount"));
   const withholdingTax = moneyOrZero(getValue(formData, "withholding_tax"));
-  const costTimingAmount = moneyOrZero(getValue(formData, "cost_timing_amount"));
-  const revenueTimingAmount = moneyOrZero(getValue(formData, "revenue_timing_amount") || getValue(formData, "gross_invoice"));
-  const cashImpact = revenueTimingAmount - discountAmount - withholdingTax - costTimingAmount;
-  const marginImpact = grossInvoice - discountAmount - withholdingTax - costTimingAmount;
+  const costAmount = moneyOrZero(getValue(formData, "cost_timing_amount"));
+  const dsoDays = Number(getValue(formData, "dso_days") || 30);
+  const invoiceDate = dateOrNull(getValue(formData, "invoice_date")) || new Date();
+  const costDate = dateOrNull(getValue(formData, "cost_date")) || undefined;
+  const discountRatePercent = getValue(formData, "discount_rate_percent") ? moneyOrZero(getValue(formData, "discount_rate_percent")) : undefined;
+  const calculation = calculateCashflow({
+    invoiceDate,
+    dsoDays,
+    grossInvoice,
+    discountAmount,
+    withholdingTax,
+    costAmount,
+    costDate,
+    discountRatePercent,
+  });
   const option = await getDb().cashflowOption.create({
     data: {
       opportunityId: opportunity.id,
       optionCode: getValue(formData, "option_id") || `CFO-${shortId()}`,
       name: getValue(formData, "option_name"),
       currency: getValue(formData, "currency") || "USD",
-      dsoDays: Number(getValue(formData, "dso_days") || 30),
+      dsoDays,
       grossInvoice,
       discountAmount,
       withholdingTax,
-      cashGap: cashImpact,
-      marginAmount: marginImpact,
-      npv: optionalMoney(getValue(formData, "npv")),
+      cashGap: calculation.cashGap,
+      marginAmount: calculation.marginAmount,
+      npv: calculation.npv,
+      calculation: calculation as unknown as Prisma.InputJsonValue,
       status: "draft",
     },
   });
   await getDb().systemSetting.upsert({
-    where: { key: `sevenfold.cashflow_option_detail.${option.id}` },
+    where: { organizationId_key: { organizationId, key: `sevenfold.cashflow_option_detail.${option.id}` } },
     create: {
+      organizationId,
       key: `sevenfold.cashflow_option_detail.${option.id}`,
       value: cashflowDetailFromForm(formData, option.id),
       description: "Cashflow milestone, invoice schedule, timing, and formula metadata.",
@@ -965,15 +1017,16 @@ export async function createCashflowOptionAction(formData: FormData) {
     },
     update: { value: cashflowDetailFromForm(formData, option.id), status: "active" },
   });
-  await writeAudit({ actorId: actor?.id, action: "CREATE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: option.optionCode, after: { opportunity: opportunity.opportunityCode, cashImpact, marginImpact } });
+  await writeAudit({ actorId: actor?.id, action: "CREATE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: option.optionCode, after: { opportunity: opportunity.opportunityCode, cashGap: calculation.cashGap, marginAmount: calculation.marginAmount, npv: calculation.npv } });
   revalidatePath("/");
 }
 
 export async function approveCashflowOptionAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER"]);
+  const organizationId = requireOrganizationId(actor);
   const option = await getDb().cashflowOption.findFirst({
-    where: { optionCode: getValue(formData, "option_id"), opportunity: { opportunityCode: getValue(formData, "opportunity_id") } },
+    where: { optionCode: getValue(formData, "option_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
     include: { opportunity: true },
   });
   if (!option) throw new Error("Cashflow option not found");
@@ -988,8 +1041,9 @@ export async function approveCashflowOptionAction(formData: FormData) {
 export async function createSdsAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
+  const organizationId = requireOrganizationId(actor);
   const opportunity = await getDb().opportunity.findUnique({
-    where: { opportunityCode: getValue(formData, "opportunity_id") },
+    where: { organizationId_opportunityCode: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
     include: { cashflowOptions: true, pricingDecisions: true },
   });
   if (!opportunity) throw new Error("Opportunity not found");
@@ -1014,8 +1068,8 @@ export async function createSdsAction(formData: FormData) {
     },
   });
   await getDb().systemSetting.upsert({
-    where: { key: `sevenfold.sds_summary.${sds.id}` },
-    create: { key: `sevenfold.sds_summary.${sds.id}`, value: sdsSummaryFromForm(formData, sds.id), description: "SDS summary and presenter metadata.", status: "active" },
+    where: { organizationId_key: { organizationId, key: `sevenfold.sds_summary.${sds.id}` } },
+    create: { organizationId, key: `sevenfold.sds_summary.${sds.id}`, value: sdsSummaryFromForm(formData, sds.id), description: "SDS summary and presenter metadata.", status: "active" },
     update: { value: sdsSummaryFromForm(formData, sds.id), status: "active" },
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_SDS", entityType: "sds", entityId: sds.id, after: { opportunity: opportunity.opportunityCode, presenterRole } });
@@ -1025,7 +1079,8 @@ export async function createSdsAction(formData: FormData) {
 export async function decideSdsAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireSponsor(actor);
-  const sds = await getDb().salesDecisionSubmission.findUnique({ where: { id: getValue(formData, "sds_id") } });
+  const organizationId = requireOrganizationId(actor);
+  const sds = await getDb().salesDecisionSubmission.findFirst({ where: { id: getValue(formData, "sds_id"), opportunity: { organizationId } } });
   if (!sds) throw new Error("SDS not found");
   const updated = await getDb().salesDecisionSubmission.update({
     where: { id: sds.id },
@@ -1038,8 +1093,9 @@ export async function decideSdsAction(formData: FormData) {
 export async function createSdoaAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_CONTRACT_LEGAL", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
+  const organizationId = requireOrganizationId(actor);
   const opportunity = await getDb().opportunity.findUnique({
-    where: { opportunityCode: getValue(formData, "opportunity_id") },
+    where: { organizationId_opportunityCode: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
     include: { sdsApprovals: true },
   });
   if (!opportunity) throw new Error("Opportunity not found");
@@ -1078,7 +1134,8 @@ export async function createSdoaAction(formData: FormData) {
 export async function decideSdoaAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireSponsor(actor);
-  const sdoa = await getDb().orderAcknowledgement.findUnique({ where: { id: getValue(formData, "sdoa_id") }, include: { deviations: true } });
+  const organizationId = requireOrganizationId(actor);
+  const sdoa = await getDb().orderAcknowledgement.findFirst({ where: { id: getValue(formData, "sdoa_id"), opportunity: { organizationId } }, include: { deviations: true } });
   if (!sdoa) throw new Error("SDOA not found");
   const decision = getValue(formData, "decision");
   if (["rejected", "returned"].includes(decision) && !getValue(formData, "comments")) {
@@ -1095,18 +1152,19 @@ export async function decideSdoaAction(formData: FormData) {
 export async function createExecutionProjectFromSdoaAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
+  const organizationId = requireOrganizationId(actor);
   const sdoaId = getValue(formData, "linked_sdoa_id");
-  if (!await sdoaIsApproved(sdoaId)) {
+  if (!await sdoaIsApproved(organizationId, sdoaId)) {
     throw new Error("Project can only be created from an approved or acknowledged SDOA.");
   }
-  const registry = await getProjectExecutionRegistryForMutation();
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const projectId = getValue(formData, "project_id") || generatedLegacyId("PRJ");
   if (registry.projects.some((project) => project.projectId === projectId)) {
     throw new Error("Project ID already exists.");
   }
-  const frameworkVersion = getValue(formData, "framework_version") || await getLatestActiveFrameworkVersion();
+  const frameworkVersion = getValue(formData, "framework_version") || await getLatestActiveFrameworkVersion(organizationId);
   const currency = normalizeCurrency(getValue(formData, "currency_manual") || getValue(formData, "currency") || "USD");
-  const templateSnapshot = await getActiveTemplateSnapshot();
+  const templateSnapshot = await getActiveTemplateSnapshot(organizationId);
   const now = new Date().toISOString();
   const project = {
     projectId,
@@ -1132,7 +1190,7 @@ export async function createExecutionProjectFromSdoaAction(formData: FormData) {
     createdAt: now,
     updatedAt: now,
   };
-  await saveProjectExecutionRegistry({
+  await saveProjectExecutionRegistry(organizationId, {
     ...registry,
     projects: [project, ...registry.projects],
     gates: [...createDefaultGates(projectId, actor?.email || ""), ...registry.gates],
@@ -1144,7 +1202,8 @@ export async function createExecutionProjectFromSdoaAction(formData: FormData) {
 export async function updateProjectGateAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
-  const registry = await getProjectExecutionRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const gateId = getValue(formData, "gate_id");
   const nextGates = registry.gates.map((gate) => gate.gateId === gateId ? {
     ...gate,
@@ -1162,7 +1221,7 @@ export async function updateProjectGateAction(formData: FormData) {
   } : gate);
   const updatedGate = nextGates.find((gate) => gate.gateId === gateId);
   if (!updatedGate) throw new Error("Gate not found.");
-  await saveProjectExecutionRegistry({ ...registry, gates: nextGates });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, gates: nextGates });
   await writeAudit({ actorId: actor?.id, action: "REQUEST_PROJECT_GATE_APPROVAL", entityType: "project_gate", entityId: gateId, after: updatedGate });
   revalidatePath("/");
 }
@@ -1170,7 +1229,8 @@ export async function updateProjectGateAction(formData: FormData) {
 export async function decideProjectGateAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireSponsor(actor);
-  const registry = await getProjectExecutionRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const gateId = getValue(formData, "gate_id");
   const decision = getValue(formData, "decision");
   const nextGates = registry.gates.map((gate) => {
@@ -1191,7 +1251,7 @@ export async function decideProjectGateAction(formData: FormData) {
   });
   const updatedGate = nextGates.find((gate) => gate.gateId === gateId);
   if (!updatedGate) throw new Error("Gate not found.");
-  await saveProjectExecutionRegistry({ ...registry, gates: nextGates });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, gates: nextGates });
   await writeAudit({ actorId: actor?.id, action: "DECIDE_PROJECT_GATE", entityType: "project_gate", entityId: gateId, after: updatedGate, reason: getValue(formData, "comments") });
   revalidatePath("/");
 }
@@ -1199,7 +1259,8 @@ export async function decideProjectGateAction(formData: FormData) {
 export async function upsertSiteHandlerAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER"]);
-  const registry = await getProjectExecutionRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const siteClusterId = getValue(formData, "site_cluster_id");
   const site = {
     siteClusterId,
@@ -1218,7 +1279,7 @@ export async function upsertSiteHandlerAction(formData: FormData) {
     updatedAt: new Date().toISOString(),
   };
   const sites = [site, ...registry.sites.filter((item) => !(item.projectId === site.projectId && item.siteClusterId === site.siteClusterId))];
-  await saveProjectExecutionRegistry({ ...registry, sites });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, sites });
   await writeAudit({ actorId: actor?.id, action: "UPSERT_SITE_HANDLER", entityType: "site_handler", entityId: `${site.projectId}:${site.siteClusterId}`, after: site });
   revalidatePath("/");
 }
@@ -1226,7 +1287,8 @@ export async function upsertSiteHandlerAction(formData: FormData) {
 export async function upsertProjectResourceDemandAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR"]);
-  const registry = await getProjectExecutionRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const demandId = getValue(formData, "demand_id") || generatedLegacyId("RDEM");
   const demand = {
     demandId,
@@ -1250,7 +1312,7 @@ export async function upsertProjectResourceDemandAction(formData: FormData) {
   requireValue(demand.projectId, "Project");
   requireValue(demand.requiredRole, "Required role");
   const resourceDemands = [demand, ...registry.resourceDemands.filter((item) => item.demandId !== demandId)];
-  await saveProjectExecutionRegistry({ ...registry, resourceDemands });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, resourceDemands });
   await writeAudit({ actorId: actor?.id, action: "UPSERT_PROJECT_RESOURCE_DEMAND", entityType: "project_resource_demand", entityId: demandId, after: demand });
   revalidatePath("/");
 }
@@ -1258,7 +1320,8 @@ export async function upsertProjectResourceDemandAction(formData: FormData) {
 export async function upsertCommercialProcurementFlowAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROCUREMENT_MANAGER", "ROLE_FINANCE_CONTROLLER"]);
-  const registry = await getProjectExecutionRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const flowId = getValue(formData, "flow_id") || generatedLegacyId("CPF");
   const flow = {
     flowId,
@@ -1284,7 +1347,7 @@ export async function upsertCommercialProcurementFlowAction(formData: FormData) 
   };
   requireValue(flow.projectId, "Project");
   const commercialFlows = [flow, ...registry.commercialFlows.filter((item) => item.flowId !== flowId)];
-  await saveProjectExecutionRegistry({ ...registry, commercialFlows });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, commercialFlows });
   await writeAudit({ actorId: actor?.id, action: "UPSERT_COMMERCIAL_PROCUREMENT_FLOW", entityType: "commercial_procurement_flow", entityId: flowId, after: flow });
   revalidatePath("/");
 }
@@ -1292,12 +1355,13 @@ export async function upsertCommercialProcurementFlowAction(formData: FormData) 
 export async function decideCommercialProcurementFlowAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROCUREMENT_MANAGER"]);
+  const organizationId = requireOrganizationId(actor);
   const flowId = getValue(formData, "flow_id");
-  const registry = await getProjectExecutionRegistryForMutation();
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const before = registry.commercialFlows.find((item) => item.flowId === flowId);
   if (!before) throw new Error("Commercial/procurement flow not found");
   const updated = { ...before, approvalStatus: getValue(formData, "approval_status") || "approved", approvedBy: session.email, approvedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  await saveProjectExecutionRegistry({ ...registry, commercialFlows: registry.commercialFlows.map((item) => item.flowId === flowId ? updated : item) });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, commercialFlows: registry.commercialFlows.map((item) => item.flowId === flowId ? updated : item) });
   await writeAudit({ actorId: actor?.id, action: "DECIDE_COMMERCIAL_PROCUREMENT_FLOW", entityType: "commercial_procurement_flow", entityId: flowId, before, after: updated, reason: getValue(formData, "comments") });
   revalidatePath("/");
 }
@@ -1305,9 +1369,10 @@ export async function decideCommercialProcurementFlowAction(formData: FormData) 
 export async function importSiteListExcelAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER"]);
+  const organizationId = requireOrganizationId(actor);
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) throw new Error("Site list Excel file is required");
-  const registry = await getProjectExecutionRegistryForMutation();
+  const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const rows = workbookRows(await file.arrayBuffer());
   const sites = rows.map((row) => ({
     siteClusterId: cell(row, "site/cluster id") || cell(row, "site_cluster_id"),
@@ -1326,14 +1391,14 @@ export async function importSiteListExcelAction(formData: FormData) {
     updatedAt: new Date().toISOString(),
   })).filter((row) => row.projectId && row.siteClusterId);
   const existing = registry.sites.filter((site) => !sites.some((row) => row.projectId === site.projectId && row.siteClusterId === site.siteClusterId));
-  await saveProjectExecutionRegistry({ ...registry, sites: [...sites, ...existing] });
+  await saveProjectExecutionRegistry(organizationId, { ...registry, sites: [...sites, ...existing] });
   await writeAudit({ actorId: actor?.id, action: "IMPORT_SITE_LIST_EXCEL", entityType: "site_handler", entityId: file.name, after: { imported: sites.length } });
   revalidatePath("/");
 }
 
-async function getApprovedOpportunityForCashflow(opportunityCode: string) {
+async function getApprovedOpportunityForCashflow(organizationId: string, opportunityCode: string) {
   const opportunity = await getDb().opportunity.findUnique({
-    where: { opportunityCode },
+    where: { organizationId_opportunityCode: { organizationId, opportunityCode } },
     include: { pricingDecisions: true },
   });
   if (!opportunity) throw new Error("Opportunity not found");
@@ -1378,6 +1443,7 @@ function sdsSummaryFromForm(formData: FormData, sdsId: string) {
 export async function createCandidateAction(formData: FormData) {
   const session = await requireSignedInSession();
   const actor = await findUserByEmail(session.email);
+  const organizationId = requireOrganizationId(actor);
   const fullName = getValue(formData, "full_name");
   const email = getValue(formData, "email").toLowerCase();
   const position = getValue(formData, "position_applied");
@@ -1387,6 +1453,7 @@ export async function createCandidateAction(formData: FormData) {
 
   const candidate = await getDb().resource.create({
     data: {
+      organizationId,
       legacySourceId: generatedLegacyId("CAND"),
       kind: ResourceKind.CANDIDATE,
       fullName,
@@ -1476,8 +1543,9 @@ export async function updateCandidateAction(formData: FormData) {
   if (!["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN"].includes(actor?.role.code || "")) {
     throw new Error("Only admin roles can edit candidates.");
   }
+  const organizationId = requireOrganizationId(actor);
   const candidateId = getValue(formData, "candidate_id");
-  const candidate = await findResourceByLegacyId(candidateId, ResourceKind.CANDIDATE);
+  const candidate = await findResourceByLegacyId(organizationId, candidateId, ResourceKind.CANDIDATE);
   if (!candidate) throw new Error("Candidate not found");
   const updated = await getDb().resource.update({
     where: { id: candidate.id },
@@ -1509,13 +1577,14 @@ export async function updateCandidateAction(formData: FormData) {
 
 export async function submitFeedbackAction(formData: FormData) {
   const { user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
   const decision = getValue(formData, "decision");
   const candidateId = getValue(formData, "candidate_id");
   const clientId = getValue(formData, "client_id");
   const projectId = getValue(formData, "project_id");
-  const candidate = await findResourceByLegacyId(candidateId, ResourceKind.CANDIDATE);
-  const client = await findClientByLegacyId(clientId);
-  const project = projectId ? await findProjectByLegacyId(projectId) : null;
+  const candidate = await findResourceByLegacyId(organizationId, candidateId, ResourceKind.CANDIDATE);
+  const client = await findClientByLegacyId(organizationId, clientId);
+  const project = projectId ? await findProjectByLegacyId(organizationId, projectId) : null;
   if (!candidate || !client) throw new Error("Candidate or client not found");
   if (decision === "REJECTED") requireValue(getValue(formData, "rejection_reason"), "Rejection reason");
   const feedback = await getDb().clientFeedback.create({
@@ -1551,17 +1620,19 @@ export async function submitFeedbackAction(formData: FormData) {
 
 export async function startOnboardingFromCandidateAction(formData: FormData) {
   const { user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
   const candidateId = getValue(formData, "candidate_id");
-  const candidate = await findResourceByLegacyId(candidateId, ResourceKind.CANDIDATE);
+  const candidate = await findResourceByLegacyId(organizationId, candidateId, ResourceKind.CANDIDATE);
   if (!candidate) throw new Error("Candidate not found");
   if (!["proceed", "onboarding_in_progress", "onboarded"].includes(candidate.status)) {
     throw new Error("Candidate must be PROCEED before onboarding");
   }
   const existing = await getDb().resource.findFirst({
-    where: { kind: ResourceKind.EMPLOYEE, OR: [{ sourceCandidateLegacyId: candidate.legacySourceId }, { email: candidate.email }] },
+    where: { organizationId, kind: ResourceKind.EMPLOYEE, OR: [{ sourceCandidateLegacyId: candidate.legacySourceId }, { email: candidate.email }] },
   });
   const employee = existing || await getDb().resource.create({
     data: {
+      organizationId,
       legacySourceId: generatedLegacyId("EMP"),
       kind: ResourceKind.EMPLOYEE,
       sourceCandidateLegacyId: candidate.legacySourceId,
@@ -1585,9 +1656,10 @@ export async function startOnboardingFromCandidateAction(formData: FormData) {
 
 export async function markOnboardingStepAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
   const employeeId = getValue(formData, "employee_id");
   const step = getValue(formData, "step");
-  const employee = await findResourceByLegacyId(employeeId, ResourceKind.EMPLOYEE);
+  const employee = await findResourceByLegacyId(organizationId, employeeId, ResourceKind.EMPLOYEE);
   if (!employee) throw new Error("Employee not found");
   const now = new Date();
   const data: Record<string, Date | string> = {};
@@ -1639,7 +1711,8 @@ export async function markOnboardingStepAction(formData: FormData) {
 
 export async function updateEmployeeCommercialAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const employee = await findResourceByLegacyId(getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
+  const organizationId = requireOrganizationId(actor);
+  const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
   if (!employee) throw new Error("Employee not found");
   const clientBillRate = moneyOrZero(getValue(formData, "client_bill_rate"));
   const managementFeeRate = moneyOrZero(getValue(formData, "management_fee_rate") || "15");
@@ -1687,6 +1760,7 @@ export async function createDocumentMetadataAction(formData: FormData) {
   if (!["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN"].includes(actor?.role.code || "")) {
     throw new Error("Only Super Admin or Nexus Admin can manage document metadata.");
   }
+  const organizationId = requireOrganizationId(actor);
   const driveFileId = normalizeDriveFileId(getValue(formData, "drive_file_id"));
   requireValue(driveFileId, "Drive file ID");
   const doc = await getDb().document.upsert({
@@ -1700,6 +1774,7 @@ export async function createDocumentMetadataAction(formData: FormData) {
       status: "active",
     },
     create: {
+      organizationId,
       legacySourceId: generatedLegacyId("DOC"),
       driveFileId,
       entityType: getValue(formData, "entity_type"),
@@ -1752,7 +1827,8 @@ export async function updateDocumentMetadataAction(formData: FormData) {
 
 export async function createTimesheetAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const employee = await findResourceByLegacyId(getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
+  const organizationId = requireOrganizationId(actor);
+  const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
   if (!employee) throw new Error("Employee not found");
   requireEmployeeOwnershipOrRole(actor, employee, ["ROLE_HR_ADMIN", "ROLE_PAYROLL_ADMIN_OPS"]);
   const assignmentId = getValue(formData, "assignment_id");
@@ -1796,7 +1872,8 @@ export async function updateTimesheetStatusAction(formData: FormData) {
 
 export async function createOvertimeRequestAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const employee = await findResourceByLegacyId(getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
+  const organizationId = requireOrganizationId(actor);
+  const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
   if (!employee) throw new Error("Employee not found");
   requireEmployeeOwnershipOrRole(actor, employee, ["ROLE_HR_ADMIN", "ROLE_PAYROLL_ADMIN_OPS"]);
   const assignmentId = getValue(formData, "assignment_id");
@@ -1840,7 +1917,8 @@ export async function updateOvertimeStatusAction(formData: FormData) {
 
 export async function createLeaveRequestAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const employee = await findResourceByLegacyId(getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
+  const organizationId = requireOrganizationId(actor);
+  const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
   if (!employee) throw new Error("Employee not found");
   requireEmployeeOwnershipOrRole(actor, employee, ["ROLE_HR_ADMIN"]);
   const assignmentId = getValue(formData, "assignment_id");
@@ -1866,8 +1944,9 @@ export async function createLeaveRequestAction(formData: FormData) {
 
 export async function createProjectApplicationAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const employee = await findResourceByLegacyId(getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
-  const project = await findProjectByLegacyId(getValue(formData, "project_id"));
+  const organizationId = requireOrganizationId(actor);
+  const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
+  const project = await findProjectByLegacyId(organizationId, getValue(formData, "project_id"));
   if (!employee || !project) throw new Error("Employee or project not found");
   requireEmployeeOwnershipOrRole(actor, employee, ["ROLE_HR_ADMIN"]);
   const application = await getDb().projectApplication.create({
@@ -1906,8 +1985,9 @@ export async function updateLeaveStatusAction(formData: FormData) {
 
 export async function createGrRecordAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const client = await findClientByLegacyId(getValue(formData, "client_id"));
-  const project = getValue(formData, "project_id") ? await findProjectByLegacyId(getValue(formData, "project_id")) : null;
+  const organizationId = requireOrganizationId(actor);
+  const client = await findClientByLegacyId(organizationId, getValue(formData, "client_id"));
+  const project = getValue(formData, "project_id") ? await findProjectByLegacyId(organizationId, getValue(formData, "project_id")) : null;
   if (!client) throw new Error("Client not found");
   const gr = await getDb().grRecord.create({
     data: {
@@ -1927,8 +2007,9 @@ export async function createGrRecordAction(formData: FormData) {
 
 export async function createInvoiceDraftAction(formData: FormData) {
   const { user: actor } = await currentActor();
-  const client = await findClientByLegacyId(getValue(formData, "client_id"));
-  const project = getValue(formData, "project_id") ? await findProjectByLegacyId(getValue(formData, "project_id")) : null;
+  const organizationId = requireOrganizationId(actor);
+  const client = await findClientByLegacyId(organizationId, getValue(formData, "client_id"));
+  const project = getValue(formData, "project_id") ? await findProjectByLegacyId(organizationId, getValue(formData, "project_id")) : null;
   const grId = getValue(formData, "gr_id");
   const gr = grId ? await getDb().grRecord.findFirst({ where: { OR: [{ legacySourceId: grId }, { id: grId }] } }) : null;
   if (!client) throw new Error("Client not found");
@@ -1962,10 +2043,11 @@ export async function createInvoiceDraftAction(formData: FormData) {
 export async function createChangeRequestAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireDeliveryGovernanceRole(actor);
+  const organizationId = requireOrganizationId(actor);
   const projectId = getValue(formData, "project_id");
   requireValue(projectId, "Project");
   const now = new Date().toISOString();
-  const registry = await getDeliveryGovernanceRegistryForMutation();
+  const registry = await getDeliveryGovernanceRegistryForMutation(organizationId);
   const record = {
     crId: getValue(formData, "cr_id") || generatedLegacyId("CR"),
     projectId,
@@ -1987,7 +2069,7 @@ export async function createChangeRequestAction(formData: FormData) {
   };
   requireValue(record.title, "CR title");
   registry.changeRequests = [record, ...registry.changeRequests.filter((cr) => cr.crId !== record.crId)];
-  await saveDeliveryGovernanceRegistry(registry);
+  await saveDeliveryGovernanceRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "CREATE_CHANGE_REQUEST", entityType: "change_request", entityId: record.crId, after: record });
   revalidatePath("/");
 }
@@ -1995,10 +2077,11 @@ export async function createChangeRequestAction(formData: FormData) {
 export async function decideChangeRequestAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireSponsor(actor);
+  const organizationId = requireOrganizationId(actor);
   const crId = getValue(formData, "cr_id");
   const decision = getValue(formData, "decision");
   if (!["approved", "rejected", "returned"].includes(decision)) throw new Error("Unsupported CR decision");
-  const governanceRegistry = await getDeliveryGovernanceRegistryForMutation();
+  const governanceRegistry = await getDeliveryGovernanceRegistryForMutation(organizationId);
   const before = governanceRegistry.changeRequests.find((cr) => cr.crId === crId);
   if (!before) throw new Error("Change request not found");
   const updated = {
@@ -2010,9 +2093,9 @@ export async function decideChangeRequestAction(formData: FormData) {
     updatedAt: new Date().toISOString(),
   };
   governanceRegistry.changeRequests = governanceRegistry.changeRequests.map((cr) => (cr.crId === crId ? updated : cr));
-  await saveDeliveryGovernanceRegistry(governanceRegistry);
+  await saveDeliveryGovernanceRegistry(organizationId, governanceRegistry);
   if (decision === "approved") {
-    const executionRegistry = await getProjectExecutionRegistryForMutation();
+    const executionRegistry = await getProjectExecutionRegistryForMutation(organizationId);
     executionRegistry.projects = executionRegistry.projects.map((project) => project.projectId === updated.projectId ? {
       ...project,
       deliveryBaseline: [project.deliveryBaseline, updated.scopeImpact, updated.scheduleImpact].filter(Boolean).join("\n"),
@@ -2021,7 +2104,7 @@ export async function decideChangeRequestAction(formData: FormData) {
       additionalRevenue: String(Number(project.additionalRevenue || 0) + Number(updated.addOnSalesValue || 0)),
       updatedAt: new Date().toISOString(),
     } : project);
-    await saveProjectExecutionRegistry(executionRegistry);
+    await saveProjectExecutionRegistry(organizationId, executionRegistry);
   }
   await writeAudit({ actorId: actor?.id, action: "DECIDE_CHANGE_REQUEST", entityType: "change_request", entityId: crId, before, after: updated, reason: getValue(formData, "comments") });
   revalidatePath("/");
@@ -2030,8 +2113,9 @@ export async function decideChangeRequestAction(formData: FormData) {
 export async function createQualityIncidentAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireDeliveryGovernanceRole(actor);
+  const organizationId = requireOrganizationId(actor);
   const now = new Date().toISOString();
-  const registry = await getDeliveryGovernanceRegistryForMutation();
+  const registry = await getDeliveryGovernanceRegistryForMutation(organizationId);
   const record = {
     incidentId: getValue(formData, "incident_id") || generatedLegacyId("INC"),
     projectId: getValue(formData, "project_id"),
@@ -2054,7 +2138,7 @@ export async function createQualityIncidentAction(formData: FormData) {
   };
   requireValue(record.incidentType, "Incident type");
   registry.incidents = [record, ...registry.incidents.filter((incident) => incident.incidentId !== record.incidentId)];
-  await saveDeliveryGovernanceRegistry(registry);
+  await saveDeliveryGovernanceRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "CREATE_QUALITY_INCIDENT", entityType: "quality_incident", entityId: record.incidentId, after: record });
   revalidatePath("/");
 }
@@ -2062,7 +2146,8 @@ export async function createQualityIncidentAction(formData: FormData) {
 export async function createGovernanceRecordAction(formData: FormData) {
   const { session, user: actor } = await currentActor();
   requireDeliveryGovernanceRole(actor);
-  const registry = await getDeliveryGovernanceRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getDeliveryGovernanceRegistryForMutation(organizationId);
   const record = {
     governanceId: getValue(formData, "governance_id") || generatedLegacyId("GOV"),
     level: getValue(formData, "level"),
@@ -2092,7 +2177,7 @@ export async function createGovernanceRecordAction(formData: FormData) {
   requireValue(record.level, "Governance level");
   requireValue(record.workstream, "Workstream");
   registry.governanceRecords = [record, ...registry.governanceRecords.filter((item) => item.governanceId !== record.governanceId)];
-  await saveDeliveryGovernanceRegistry(registry);
+  await saveDeliveryGovernanceRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "CREATE_GOVERNANCE_RECORD", entityType: "governance_record", entityId: record.governanceId, after: record });
   revalidatePath("/");
 }
@@ -2100,7 +2185,8 @@ export async function createGovernanceRecordAction(formData: FormData) {
 export async function createTalentRecordAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireTalentPlanningRole(actor);
-  const registry = await getTalentPlanningRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getTalentPlanningRegistryForMutation(organizationId);
   const now = new Date().toISOString();
   const record = {
     talentId: getValue(formData, "talent_id") || generatedLegacyId("TAL"),
@@ -2122,7 +2208,7 @@ export async function createTalentRecordAction(formData: FormData) {
   };
   requireValue(record.name, "Name");
   registry.talents = [record, ...registry.talents.filter((talent) => talent.talentId !== record.talentId)];
-  await saveTalentPlanningRegistry(registry);
+  await saveTalentPlanningRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "UPSERT_TALENT_RECORD", entityType: "talent_planning", entityId: record.talentId, after: record });
   revalidatePath("/");
 }
@@ -2130,10 +2216,11 @@ export async function createTalentRecordAction(formData: FormData) {
 export async function importTalentPlanningExcelAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireTalentPlanningRole(actor);
+  const organizationId = requireOrganizationId(actor);
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) throw new Error("Talent Excel file is required");
   const rows = workbookRows(await file.arrayBuffer());
-  const registry = await getTalentPlanningRegistryForMutation();
+  const registry = await getTalentPlanningRegistryForMutation(organizationId);
   const now = new Date().toISOString();
   const imported = rows.map((row) => ({
     talentId: generatedLegacyId("TAL"),
@@ -2154,7 +2241,7 @@ export async function importTalentPlanningExcelAction(formData: FormData) {
     updatedAt: now,
   })).filter((row) => row.name);
   registry.talents = [...imported, ...registry.talents];
-  await saveTalentPlanningRegistry(registry);
+  await saveTalentPlanningRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "IMPORT_TALENT_PLANNING_EXCEL", entityType: "talent_planning", entityId: file.name, after: { imported: imported.length } });
   revalidatePath("/");
 }
@@ -2162,8 +2249,9 @@ export async function importTalentPlanningExcelAction(formData: FormData) {
 export async function upsertRatecardResourceAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireRatecardRole(actor);
+  const organizationId = requireOrganizationId(actor);
   const now = new Date().toISOString();
-  const registry = await getRatecardRegistryForMutation();
+  const registry = await getRatecardRegistryForMutation(organizationId);
   const record = calculateRatecardRecord({
     ratecardId: getValue(formData, "ratecard_id") || generatedLegacyId("RATE"),
     resourceType: getValue(formData, "resource_type"),
@@ -2188,7 +2276,7 @@ export async function upsertRatecardResourceAction(formData: FormData) {
   });
   requireValue(record.resourceType, "Resource type");
   registry.resources = [record, ...registry.resources.filter((item) => item.ratecardId !== record.ratecardId)];
-  await saveRatecardRegistry(registry);
+  await saveRatecardRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "UPSERT_RATECARD_RESOURCE", entityType: "ratecard", entityId: record.ratecardId, after: record });
   revalidatePath("/");
 }
@@ -2196,9 +2284,10 @@ export async function upsertRatecardResourceAction(formData: FormData) {
 export async function importRatecardExcelAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireRatecardRole(actor);
+  const organizationId = requireOrganizationId(actor);
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) throw new Error("Ratecard Excel file is required");
-  const registry = await getRatecardRegistryForMutation();
+  const registry = await getRatecardRegistryForMutation(organizationId);
   const now = new Date().toISOString();
   const imported = workbookRows(await file.arrayBuffer()).map((row) => calculateRatecardRecord({
     ratecardId: cell(row, "ratecard id") || cell(row, "ratecard_id") || generatedLegacyId("RATE"),
@@ -2222,7 +2311,7 @@ export async function importRatecardExcelAction(formData: FormData) {
     createdAt: now,
     updatedAt: now,
   })).filter((row) => row.resourceType);
-  await saveRatecardRegistry({ ...registry, resources: [...imported, ...registry.resources.filter((item) => !imported.some((row) => row.ratecardId === item.ratecardId))] });
+  await saveRatecardRegistry(organizationId, { ...registry, resources: [...imported, ...registry.resources.filter((item) => !imported.some((row) => row.ratecardId === item.ratecardId))] });
   await writeAudit({ actorId: actor?.id, action: "IMPORT_RATECARD_EXCEL", entityType: "ratecard", entityId: file.name, after: { imported: imported.length } });
   revalidatePath("/");
 }
@@ -2230,10 +2319,11 @@ export async function importRatecardExcelAction(formData: FormData) {
 export async function importFrameworkSettingsExcelAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
+  const organizationId = requireOrganizationId(actor);
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) throw new Error("Framework settings Excel file is required");
   const workbook = XLSX.read(Buffer.from(await file.arrayBuffer()), { type: "buffer" });
-  const current = await getFrameworkControlPlaneForAction();
+  const current = await getFrameworkControlPlaneForAction(organizationId);
   const before = structuredClone(current);
   const settingMap: Record<string, keyof FrameworkControlPlane> = {
     dealTypes: "dealTypes",
@@ -2251,14 +2341,15 @@ export async function importFrameworkSettingsExcelAction(formData: FormData) {
       (current[key] as unknown[]) = rows.map((row) => Object.fromEntries(Object.entries(row).map(([field, value]) => [toCamel(field), String(value || "")])));
     }
   }
-  await saveFrameworkControlPlaneForAction(current, actor?.id, "IMPORT_FRAMEWORK_SETTINGS_EXCEL", before, getValue(formData, "reason") || "Admin optional framework settings import", getValue(formData, "approval_reference"));
+  await saveFrameworkControlPlaneForAction(organizationId, current, actor?.id, "IMPORT_FRAMEWORK_SETTINGS_EXCEL", before, getValue(formData, "reason") || "Admin optional framework settings import", getValue(formData, "approval_reference"));
   revalidatePath("/");
 }
 
 export async function manualRefreshFxRatesAction() {
   const { user: actor } = await currentActor();
   requireRatecardRole(actor);
-  const registry = await getRatecardRegistryForMutation();
+  const organizationId = requireOrganizationId(actor);
+  const registry = await getRatecardRegistryForMutation(organizationId);
   if (fxCacheIsFresh(registry)) {
     await writeAudit({ actorId: actor?.id, action: "FX_REFRESH_SKIPPED_CACHE_VALID", entityType: "ratecard", entityId: "fx_rates", after: { fxUpdatedAt: registry.fxUpdatedAt } });
     revalidatePath("/");
@@ -2267,7 +2358,7 @@ export async function manualRefreshFxRatesAction() {
   const now = new Date().toISOString();
   registry.fxRates = fallbackFxRates(now);
   registry.fxUpdatedAt = now;
-  await saveRatecardRegistry(registry);
+  await saveRatecardRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "MANUAL_REFRESH_FX_RATES", entityType: "ratecard", entityId: "fx_rates", after: { source: "fallback", fxUpdatedAt: now } });
   revalidatePath("/");
 }

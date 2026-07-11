@@ -20,17 +20,20 @@ export async function GET(
   }
 
   const { documentId } = await params;
+  const user = await getDb().user.findFirst({
+    where: { email: session.email.toLowerCase() },
+    include: { role: true, resource: true },
+  });
+  if (!user || user.status !== "ACTIVE" || !user.organizationId) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
   const document = await getDb().document.findFirst({
-    where: { OR: [{ legacySourceId: documentId }, { id: documentId }] },
+    where: { organizationId: user.organizationId, OR: [{ legacySourceId: documentId }, { id: documentId }] },
   });
   if (!document) {
     return new NextResponse("Not found", { status: 404 });
   }
-  const user = await getDb().user.findUnique({
-    where: { email: session.email.toLowerCase() },
-    include: { role: true, resource: true },
-  });
-  if (!user || user.status !== "ACTIVE" || !canViewDocument(user, document)) {
+  if (!canViewDocument(user, document)) {
     return new NextResponse("Forbidden", { status: 403 });
   }
 

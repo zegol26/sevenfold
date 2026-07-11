@@ -9,6 +9,9 @@ const sheetId = process.env.GOOGLE_SHEET_ID;
 const excelImportPath = process.env.EXCEL_IMPORT_PATH;
 const dryRun = process.env.DRY_RUN !== "false";
 const stats: Stats = { inserted: 0, updated: 0, skipped: 0, errors: 0 };
+// This importer is a one-time legacy migration path for the original tenant only
+// (Nexus Sevenfold itself); it is not a multi-tenant onboarding tool.
+const ORGANIZATION_ID = "org_nxs_default";
 
 const tabs = [
   "roles", "clients", "projects", "candidates", "employees", "users",
@@ -168,14 +171,14 @@ async function importClients(rows: Row[]) {
   for (const row of rows) {
     const legacySourceId = row.client_id;
     const code = row.client_code || legacySourceId;
-    const existing = await prisma.client.findFirst({ where: { OR: [{ legacySourceId }, { code }] } });
+    const existing = await prisma.client.findFirst({ where: { organizationId: ORGANIZATION_ID, OR: [{ legacySourceId }, { code }] } });
     await apply("client", legacySourceId, Boolean(existing), () => prisma.client.upsert({
-      where: { code },
+      where: { organizationId_code: { organizationId: ORGANIZATION_ID, code } },
       update: { name: row.client_name, status: row.status || "active", legacySourceId },
-      create: { code, name: row.client_name, status: row.status || "active", legacySourceId },
+      create: { organizationId: ORGANIZATION_ID, code, name: row.client_name, status: row.status || "active", legacySourceId },
     }));
     if (!dryRun && (row.primary_contact_name || row.primary_contact_email)) {
-      const client = await prisma.client.findUnique({ where: { code } });
+      const client = await prisma.client.findUnique({ where: { organizationId_code: { organizationId: ORGANIZATION_ID, code } } });
       if (client) {
         await prisma.clientContact.upsert({
           where: { id: `${legacySourceId}:primary` },
@@ -202,7 +205,7 @@ async function importClients(rows: Row[]) {
 
 async function importProjects(rows: Row[]) {
   for (const row of rows) {
-    const client = await prisma.client.findFirst({ where: { OR: [{ legacySourceId: row.client_id }, { code: row.client_id }] } });
+    const client = await prisma.client.findFirst({ where: { organizationId: ORGANIZATION_ID, OR: [{ legacySourceId: row.client_id }, { code: row.client_id }] } });
     if (!client) { stats.skipped += 1; continue; }
     const legacySourceId = row.project_id;
     const existing = await prisma.project.findUnique({ where: { legacySourceId } });
@@ -217,8 +220,9 @@ async function importProjects(rows: Row[]) {
 async function importResources(rows: Row[], kind: ResourceKind) {
   for (const row of rows) {
     const legacySourceId = kind === "CANDIDATE" ? row.candidate_id : row.employee_id;
-    const existing = await prisma.resource.findUnique({ where: { legacySourceId } });
+    const existing = await prisma.resource.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId } } });
     const resourceData = {
+      organizationId: ORGANIZATION_ID,
       kind,
       fullName: row.full_name,
       email: row.email || null,
@@ -264,7 +268,7 @@ async function importResources(rows: Row[], kind: ResourceKind) {
       status: row.status || "active",
     };
     await apply("resource", legacySourceId, Boolean(existing), () => prisma.resource.upsert({
-      where: { legacySourceId },
+      where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId } },
       update: resourceData,
       create: { legacySourceId, ...resourceData },
     }));
@@ -275,21 +279,21 @@ async function importUsers(rows: Row[]) {
   for (const row of rows) {
     const role = await prisma.role.findFirst({ where: { OR: [{ legacySourceId: row.role_id }, { code: row.role_id }] } });
     if (!role || !row.email) { stats.skipped += 1; continue; }
-    const client = row.client_id ? await prisma.client.findUnique({ where: { legacySourceId: row.client_id } }) : null;
-    const resource = row.employee_id ? await prisma.resource.findUnique({ where: { legacySourceId: row.employee_id } }) : null;
+    const client = row.client_id ? await prisma.client.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.client_id } } }) : null;
+    const resource = row.employee_id ? await prisma.resource.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.employee_id } } }) : null;
     const email = row.email.toLowerCase();
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const existing = await prisma.user.findFirst({ where: { organizationId: ORGANIZATION_ID, email } });
     await apply("user", row.user_id, Boolean(existing), () => prisma.user.upsert({
-      where: { email },
+      where: { organizationId_email: { organizationId: ORGANIZATION_ID, email } },
       update: { fullName: row.full_name, passwordHash: row.password_hash || null, roleId: role.id, clientId: client?.id, resourceId: resource?.id, status: row.status === "active" ? UserStatus.ACTIVE : UserStatus.INACTIVE, legacySourceId: row.user_id },
-      create: { email, fullName: row.full_name, passwordHash: row.password_hash || null, roleId: role.id, clientId: client?.id, resourceId: resource?.id, status: row.status === "active" ? UserStatus.ACTIVE : UserStatus.INACTIVE, legacySourceId: row.user_id },
+      create: { organizationId: ORGANIZATION_ID, email, fullName: row.full_name, passwordHash: row.password_hash || null, roleId: role.id, clientId: client?.id, resourceId: resource?.id, status: row.status === "active" ? UserStatus.ACTIVE : UserStatus.INACTIVE, legacySourceId: row.user_id },
     }));
   }
 }
 
 async function importInvoices(rows: Row[]) {
   for (const row of rows) {
-    const client = await prisma.client.findUnique({ where: { legacySourceId: row.client_id } });
+    const client = await prisma.client.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.client_id } } });
     if (!client) { stats.skipped += 1; continue; }
     const project = row.project_id ? await prisma.project.findUnique({ where: { legacySourceId: row.project_id } }) : null;
     const legacySourceId = row.invoice_id;
@@ -305,8 +309,8 @@ async function importInvoices(rows: Row[]) {
 
 async function importAssignments(rows: Row[]) {
   for (const row of rows) {
-    const resource = await prisma.resource.findUnique({ where: { legacySourceId: row.employee_id } });
-    const client = await prisma.client.findUnique({ where: { legacySourceId: row.client_id } });
+    const resource = await prisma.resource.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.employee_id } } });
+    const client = await prisma.client.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.client_id } } });
     const project = await prisma.project.findUnique({ where: { legacySourceId: row.project_id } });
     if (!resource || !client || !project) { stats.skipped += 1; continue; }
     const legacySourceId = row.assignment_id;
@@ -334,7 +338,7 @@ async function importInvoiceLines(rows: Row[]) {
 
 async function importProjectApplications(rows: Row[]) {
   for (const row of rows) {
-    const resource = await prisma.resource.findUnique({ where: { legacySourceId: row.employee_id } });
+    const resource = await prisma.resource.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.employee_id } } });
     const project = await prisma.project.findUnique({ where: { legacySourceId: row.project_id } });
     if (!resource || !project || !row.application_id) { stats.skipped += 1; continue; }
     const existing = await prisma.projectApplication.findUnique({ where: { legacySourceId: row.application_id } });
@@ -385,6 +389,7 @@ async function importDocuments(rows: Row[], defaultEntityType: string) {
         legacySourceId,
       },
       create: {
+        organizationId: ORGANIZATION_ID,
         driveFileId,
         fileName: row.file_name || legacySourceId,
         mimeType: "application/octet-stream",
@@ -405,7 +410,7 @@ async function importDocuments(rows: Row[], defaultEntityType: string) {
 async function importAuditLogs(rows: Row[]) {
   for (const row of rows) {
     if (!row.audit_id) { stats.skipped += 1; continue; }
-    const actor = row.actor_user_id ? await prisma.user.findUnique({ where: { legacySourceId: row.actor_user_id } }) : null;
+    const actor = row.actor_user_id ? await prisma.user.findUnique({ where: { organizationId_legacySourceId: { organizationId: ORGANIZATION_ID, legacySourceId: row.actor_user_id } } }) : null;
     const existing = await prisma.auditLog.findUnique({ where: { id: row.audit_id } });
     await apply("audit_log", row.audit_id, Boolean(existing), () => prisma.auditLog.upsert({
       where: { id: row.audit_id },
@@ -420,6 +425,7 @@ async function importAuditLogs(rows: Row[]) {
       },
       create: {
         id: row.audit_id,
+        organizationId: ORGANIZATION_ID,
         actorId: actor?.id || null,
         action: row.action || "LEGACY_IMPORT",
         entityType: row.entity_type || "legacy",
@@ -435,11 +441,11 @@ async function importAuditLogs(rows: Row[]) {
 async function importSystemSettings(rows: Row[]) {
   for (const row of rows) {
     if (!row.setting_key) { stats.skipped += 1; continue; }
-    const existing = await prisma.systemSetting.findUnique({ where: { key: row.setting_key } });
+    const existing = await prisma.systemSetting.findUnique({ where: { organizationId_key: { organizationId: ORGANIZATION_ID, key: row.setting_key } } });
     await apply("system_setting", row.setting_id, Boolean(existing), () => prisma.systemSetting.upsert({
-      where: { key: row.setting_key },
+      where: { organizationId_key: { organizationId: ORGANIZATION_ID, key: row.setting_key } },
       update: { value: row.setting_value, description: row.description || null, status: row.status || "active", legacySourceId: row.setting_id },
-      create: { key: row.setting_key, value: row.setting_value, description: row.description || null, status: row.status || "active", legacySourceId: row.setting_id },
+      create: { organizationId: ORGANIZATION_ID, key: row.setting_key, value: row.setting_value, description: row.description || null, status: row.status || "active", legacySourceId: row.setting_id },
     }));
   }
 }

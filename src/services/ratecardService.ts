@@ -19,8 +19,8 @@ export const FALLBACK_FX_RATES: FxRateRecord[] = [
 ];
 
 export const getRatecardRegistry = unstable_cache(
-  async (): Promise<RatecardRegistry> => {
-    const setting = await getDb().systemSetting.findUnique({ where: { key: RATECARD_KEY } });
+  async (organizationId: string): Promise<RatecardRegistry> => {
+    const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: RATECARD_KEY } } });
     if (!setting) return emptyRatecardRegistry();
     const value = setting.value as Partial<RatecardRegistry>;
     return {
@@ -34,8 +34,8 @@ export const getRatecardRegistry = unstable_cache(
   { revalidate: 300, tags: [RATECARD_CACHE_TAG] },
 );
 
-export async function getRatecardRegistryForMutation(): Promise<RatecardRegistry> {
-  const setting = await getDb().systemSetting.findUnique({ where: { key: RATECARD_KEY } });
+export async function getRatecardRegistryForMutation(organizationId: string): Promise<RatecardRegistry> {
+  const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: RATECARD_KEY } } });
   if (!setting) return emptyRatecardRegistry();
   const value = setting.value as Partial<RatecardRegistry>;
   return {
@@ -45,11 +45,12 @@ export async function getRatecardRegistryForMutation(): Promise<RatecardRegistry
   };
 }
 
-export async function saveRatecardRegistry(value: RatecardRegistry) {
+export async function saveRatecardRegistry(organizationId: string, value: RatecardRegistry) {
   const nextValue = { ...value, updatedAt: new Date().toISOString() };
   await getDb().systemSetting.upsert({
-    where: { key: RATECARD_KEY },
+    where: { organizationId_key: { organizationId, key: RATECARD_KEY } },
     create: {
+      organizationId,
       key: RATECARD_KEY,
       value: nextValue,
       description: "Sevenfold ratecard, FX cache, and blended costing registry.",

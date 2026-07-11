@@ -1,6 +1,7 @@
 import type { FrameworkControlPlane } from "@/lib/types";
 
 export const SEVENFOLD_ACCESS_ROLES = [
+  ["ROLE_PLATFORM_ADMIN", "Platform Admin", "Nexus Sevenfold's own staff. Provisions and supports tenant organizations; not scoped to a single organization."],
   ["ROLE_SUPER_ADMIN", "Super Admin", "Unrestricted system owner access."],
   ["ROLE_FRAMEWORK_ADMIN", "Framework Admin", "Administers framework settings, approval matrix, workflow access, and framework versions."],
   ["ROLE_TEMPLATE_ADMIN", "Template Admin", "Administers document templates through the Drive/GAS repository adapter."],
@@ -38,6 +39,7 @@ export function defaultFrameworkControlPlane(): FrameworkControlPlane {
     ["admin.framework_settings.manage", "Manage Framework Settings", "administration", "Manage deal, risk, commodity, currency, and threshold settings."],
     ["admin.templates.manage", "Manage Templates", "documents", "Manage Drive document template references."],
     ["admin.framework_versions.manage", "Manage Framework Versions", "administration", "Create framework version records."],
+    ["platform.organizations.manage", "Manage Organizations", "platform", "Provision, suspend, and support tenant organizations across the platform."],
     ["audit.logs.read", "Read Audit Logs", "audit", "Read audit trail."],
     ["opportunity.manage", "Manage Opportunity", "opportunity", "Create and update opportunity analysis records."],
     ["cashflow.manage", "Manage Cashflow", "cashflow", "Create and approve cashflow options."],
@@ -52,6 +54,8 @@ export function defaultFrameworkControlPlane(): FrameworkControlPlane {
     roles,
     permissions,
     rolePermissions: [
+      { roleCode: "ROLE_PLATFORM_ADMIN", permissionCode: "platform:all", status: "active" },
+      { roleCode: "ROLE_PLATFORM_ADMIN", permissionCode: "platform.organizations.manage", status: "active" },
       { roleCode: "ROLE_SUPER_ADMIN", permissionCode: "super:all", status: "active" },
       ...permissions.map((permission) => ({ roleCode: "ROLE_FRAMEWORK_ADMIN", permissionCode: permission.code, status: "active" })),
       { roleCode: "ROLE_TEMPLATE_ADMIN", permissionCode: "admin.templates.manage", status: "active" },

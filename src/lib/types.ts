@@ -1,4 +1,5 @@
 export type RoleId =
+  | "ROLE_PLATFORM_ADMIN"
   | "ROLE_SUPER_ADMIN"
   | "ROLE_NEXUS_ADMIN"
   | "ROLE_FRAMEWORK_ADMIN"
@@ -32,6 +33,8 @@ export type UserRecord = RecordMap & {
   email: string;
   full_name: string;
   role_id: RoleId;
+  // Empty only for platform-level staff (ROLE_PLATFORM_ADMIN) not tied to one tenant.
+  organization_id: string;
   client_id?: string;
   project_id?: string;
   employee_id?: string;

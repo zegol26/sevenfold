@@ -25,9 +25,12 @@ export async function GET(
   if (!user || user.status !== "ACTIVE" || !canDownloadTemplate(user.role.code)) {
     return new NextResponse("Forbidden", { status: 403 });
   }
+  if (!user.organizationId) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
 
   const { templateId } = await params;
-  const template = await getTemplateById(templateId);
+  const template = await getTemplateById(user.organizationId, templateId);
   if (!template) {
     return new NextResponse("Not found", { status: 404 });
   }

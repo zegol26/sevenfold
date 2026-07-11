@@ -3,10 +3,14 @@ import "server-only";
 import { getDb } from "@/lib/db";
 import { writeAudit } from "@/services/auditService";
 
+// email is no longer globally unique (scoped per organization), so this resolves the
+// first active-organization match. Disambiguating a person who belongs to more than one
+// tenant (an org picker at login) is deferred to Phase 2 onboarding work.
 export async function findUserByEmail(email: string) {
-  return getDb().user.findUnique({
+  return getDb().user.findFirst({
     where: { email: email.trim().toLowerCase() },
-    include: { role: true, client: true, resource: true },
+    include: { role: true, client: true, resource: true, organization: true },
+    orderBy: { createdAt: "asc" },
   });
 }
 

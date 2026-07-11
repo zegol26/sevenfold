@@ -9,8 +9,8 @@ export const TALENT_PLANNING_KEY = "sevenfold.talent_planning";
 export const TALENT_PLANNING_CACHE_TAG = "talent-planning";
 
 export const getTalentPlanningRegistry = unstable_cache(
-  async (): Promise<TalentPlanningRegistry> => {
-    const setting = await getDb().systemSetting.findUnique({ where: { key: TALENT_PLANNING_KEY } });
+  async (organizationId: string): Promise<TalentPlanningRegistry> => {
+    const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: TALENT_PLANNING_KEY } } });
     if (!setting) return emptyTalentPlanningRegistry();
     const value = setting.value as Partial<TalentPlanningRegistry>;
     return {
@@ -22,18 +22,19 @@ export const getTalentPlanningRegistry = unstable_cache(
   { revalidate: 300, tags: [TALENT_PLANNING_CACHE_TAG] },
 );
 
-export async function getTalentPlanningRegistryForMutation(): Promise<TalentPlanningRegistry> {
-  const setting = await getDb().systemSetting.findUnique({ where: { key: TALENT_PLANNING_KEY } });
+export async function getTalentPlanningRegistryForMutation(organizationId: string): Promise<TalentPlanningRegistry> {
+  const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: TALENT_PLANNING_KEY } } });
   if (!setting) return emptyTalentPlanningRegistry();
   const value = setting.value as Partial<TalentPlanningRegistry>;
   return { talents: Array.isArray(value.talents) ? value.talents : [] };
 }
 
-export async function saveTalentPlanningRegistry(value: TalentPlanningRegistry) {
+export async function saveTalentPlanningRegistry(organizationId: string, value: TalentPlanningRegistry) {
   const nextValue = { ...value, updatedAt: new Date().toISOString() };
   await getDb().systemSetting.upsert({
-    where: { key: TALENT_PLANNING_KEY },
+    where: { organizationId_key: { organizationId, key: TALENT_PLANNING_KEY } },
     create: {
+      organizationId,
       key: TALENT_PLANNING_KEY,
       value: nextValue,
       description: "Sevenfold talent planning import and succession registry.",

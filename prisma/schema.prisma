@@ -35,6 +35,60 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum OrganizationStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum PlanTier {
+  STARTER
+  PROFESSIONAL
+  BUSINESS
+  ENTERPRISE
+}
+
+// Organization is the SaaS tenant: the company that buys Nexus Sevenfold.
+// Not to be confused with Client, which is a tenant's own customer.
+model Organization {
+  id                String             @id @default(cuid())
+  slug              String             @unique
+  name              String
+  status            OrganizationStatus @default(TRIAL)
+  planTier          PlanTier           @default(STARTER)
+  seatLimit         Int?
+  stripeCustomerId  String?            @unique
+  // Google Drive root folder for this tenant's documents, passed into every apiService.gs call.
+  // Must stay per-tenant even though the underlying Apps Script Web App deployment is shared.
+  driveRootFolderId String?
+  users             User[]
+  clients           Client[]
+  resources         Resource[]
+  opportunities     Opportunity[]
+  ratecards         Ratecard[]
+  talentProfiles    TalentProfile[]
+  projectGovernances ProjectGovernance[]
+  governanceBoards  GovernanceBoard[]
+  documents         Document[]
+  documentTemplates DocumentTemplate[]
+  auditLogs         AuditLog[]
+  systemSettings    SystemSetting[]
+  frameworkSettings FrameworkSetting[]
+  frameworkVersions FrameworkVersion[]
+  dealTypeCriteria  DealTypeCriterion[]
+  commodityCodes    CommodityCode[]
+  riskDomains       RiskDomain[]
+  currencySettings  CurrencySetting[]
+  approvalThresholds ApprovalThreshold[]
+  approvalMatrices  ApprovalMatrix[]
+  userAccessPolicies UserAccessPolicy[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@map("organizations")
+}
+
 model Role {
   id             String   @id @default(cuid())
   code           String   @unique
@@ -52,7 +106,11 @@ model Role {
 
 model User {
   id             String     @id @default(cuid())
-  email          String     @unique
+  // Nullable: platform-level staff (ROLE_PLATFORM_ADMIN) are not tied to a single tenant.
+  // Every non-platform-admin user must have this set; enforced at the application layer.
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  email          String
   fullName       String
   passwordHash   String?
   status         UserStatus @default(ACTIVE)
@@ -62,11 +120,15 @@ model User {
   client         Client?    @relation(fields: [clientId], references: [id])
   resourceId     String?    @unique
   resource       Resource?  @relation(fields: [resourceId], references: [id])
-  legacySourceId String?    @unique
+  legacySourceId String?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
   auditLogs      AuditLog[]
   userRoles      UserRole[]
+
+  @@unique([organizationId, email])
+  @@unique([organizationId, legacySourceId])
+  @@index([organizationId])
 }
 
 model Permission {
@@ -126,6 +188,8 @@ model RolePermission {
 
 model UserAccessPolicy {
   id                String   @id @default(cuid())
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id])
   subject           String
   subjectType       String
   resourceType      String
@@ -141,6 +205,7 @@ model UserAccessPolicy {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  @@index([organizationId])
   @@index([subjectType, subject])
   @@index([resourceType, status])
   @@map("user_access_policies")
@@ -148,10 +213,12 @@ model UserAccessPolicy {
 
 model Client {
   id             String           @id @default(cuid())
-  code           String           @unique
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  code           String
   name           String
   status         String           @default("active")
-  legacySourceId String?          @unique
+  legacySourceId String?
   contacts       ClientContact[]
   projects       Project[]
   users          User[]
@@ -161,6 +228,10 @@ model Client {
   grRecords      GrRecord[]
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, legacySourceId])
+  @@index([organizationId])
 }
 
 model ClientContact {
@@ -204,6 +275,8 @@ model Project {
 
 model Resource {
   id                               String               @id @default(cuid())
+  organizationId                   String
+  organization                     Organization         @relation(fields: [organizationId], references: [id])
   kind                             ResourceKind         @default(CANDIDATE)
   fullName                         String
   email                            String?
@@ -248,7 +321,7 @@ model Resource {
   netPayEstimate                   Decimal?             @db.Decimal(18, 2)
   invoiceAmountEstimate            Decimal?             @db.Decimal(18, 2)
   commercialNotes                  String?
-  legacySourceId                   String?              @unique
+  legacySourceId                   String?
   user                             User?
   assignments                      Assignment[]
   applications                     ProjectApplication[]
@@ -259,6 +332,8 @@ model Resource {
   createdAt                        DateTime             @default(now())
   updatedAt                        DateTime             @updatedAt
 
+  @@unique([organizationId, legacySourceId])
+  @@index([organizationId])
   @@index([email])
   @@index([kind, status])
 }
@@ -474,6 +549,8 @@ model Payment {
 
 model Document {
   id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
   driveFileId    String   @unique
   fileName       String
   mimeType       String
@@ -486,72 +563,91 @@ model Document {
   status         String   @default("active")
   createdBy      String?
   updatedBy      String?
-  legacySourceId String?  @unique
+  legacySourceId String?
   invoice        Invoice? @relation("GeneratedInvoiceDocument")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  @@unique([organizationId, legacySourceId])
+  @@index([organizationId])
   @@index([entityType, entityId])
   @@index([documentType, status])
 }
 
 model DocumentTemplate {
-  id           String   @id @default(cuid())
-  driveFileId  String   @unique
-  name         String
-  documentType String
-  mimeType     String
-  folderPath   String?
-  version      Int      @default(1)
-  status       String   @default("active")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  driveFileId    String   @unique
+  name           String
+  documentType   String
+  mimeType       String
+  folderPath     String?
+  version        Int      @default(1)
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
 }
 
 model AuditLog {
-  id         String   @id @default(cuid())
-  actorId    String?
-  actor      User?    @relation(fields: [actorId], references: [id])
-  action     String
-  entityType String
-  entityId   String?
-  before     Json?
-  after      Json?
-  metadata   Json?
-  createdAt  DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  actorId        String?
+  actor          User?    @relation(fields: [actorId], references: [id])
+  action         String
+  entityType     String
+  entityId       String?
+  before         Json?
+  after          Json?
+  metadata       Json?
+  createdAt      DateTime @default(now())
 
+  @@index([organizationId])
   @@index([entityType, entityId])
   @@index([createdAt])
 }
 
 model SystemSetting {
   id             String   @id @default(cuid())
-  key            String   @unique
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  key            String
   value          Json
   description    String?
   status         String   @default("active")
-  legacySourceId String?  @unique
+  legacySourceId String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, key])
+  @@unique([organizationId, legacySourceId])
 }
 
 model FrameworkSetting {
-  id          String   @id @default(cuid())
-  key         String   @unique
-  value       Json
-  ownerRole   String?
-  status      String   @default("active")
-  createdBy   String?
-  updatedBy   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  key            String
+  value          Json
+  ownerRole      String?
+  status         String   @default("active")
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
+  @@unique([organizationId, key])
   @@map("framework_settings")
 }
 
 model FrameworkVersion {
   id                String   @id @default(cuid())
-  version           String   @unique
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  version           String
   description       String?
   snapshot          Json
   effectiveAt       DateTime?
@@ -562,12 +658,15 @@ model FrameworkVersion {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  @@unique([organizationId, version])
   @@map("framework_versions")
 }
 
 model DealTypeCriterion {
   id              String   @id @default(cuid())
-  code            String   @unique
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  code            String
   name            String
   criteria        String
   minValueUsd     Decimal? @db.Decimal(18, 2)
@@ -576,65 +675,84 @@ model DealTypeCriterion {
   status          String   @default("active")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@unique([organizationId, code])
 }
 
 model CommodityCode {
-  id          String   @id @default(cuid())
-  code        String   @unique
-  name        String
-  description String?
-  status      String   @default("active")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  code           String
+  name           String
+  description    String?
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, code])
 }
 
 model RiskDomain {
-  id        String   @id @default(cuid())
-  code      String   @unique
-  name      String
-  status    String   @default("active")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  code           String
+  name           String
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, code])
 }
 
 model CurrencySetting {
-  id           String   @id @default(cuid())
-  code         String   @unique
-  name         String
-  rateToUsd    Decimal? @db.Decimal(18, 8)
-  refreshedAt  DateTime?
+  id            String   @id @default(cuid())
+  organizationId String
+  organization  Organization @relation(fields: [organizationId], references: [id])
+  code          String
+  name          String
+  rateToUsd     Decimal? @db.Decimal(18, 8)
+  refreshedAt   DateTime?
   refreshSource String?
-  status       String   @default("active")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([organizationId, code])
 }
 
 model ApprovalThreshold {
-  id          String   @id @default(cuid())
-  decision    String
-  role        String
-  minValueUsd Decimal  @default(0) @db.Decimal(18, 2)
-  maxValueUsd Decimal? @db.Decimal(18, 2)
-  status      String   @default("active")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  decision       String
+  role           String
+  minValueUsd    Decimal  @default(0) @db.Decimal(18, 2)
+  maxValueUsd    Decimal? @db.Decimal(18, 2)
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
+  @@index([organizationId])
   @@index([decision, status])
 }
 
 model ApprovalMatrix {
-  id          String   @id @default(cuid())
-  workflow    String
-  decision    String
-  description String?
-  status      String   @default("active")
-  createdBy   String?
-  updatedBy   String?
-  rules       ApprovalRule[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  workflow       String
+  decision       String
+  description    String?
+  status         String   @default("active")
+  createdBy      String?
+  updatedBy      String?
+  rules          ApprovalRule[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  @@unique([workflow, decision])
+  @@unique([organizationId, workflow, decision])
   @@index([workflow, status])
   @@map("approval_matrices")
 }
@@ -663,7 +781,9 @@ model ApprovalRule {
 
 model Opportunity {
   id                   String   @id @default(cuid())
-  opportunityCode       String   @unique
+  organizationId        String
+  organization          Organization @relation(fields: [organizationId], references: [id])
+  opportunityCode       String
   customerName          String
   customerSegment       String?
   accountManager        String?
@@ -687,6 +807,8 @@ model Opportunity {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
+  @@unique([organizationId, opportunityCode])
+  @@index([organizationId])
   @@index([status])
   @@index([dealType])
 }
@@ -788,6 +910,8 @@ model CashflowOption {
   cashGap         Decimal  @default(0) @db.Decimal(18, 2)
   marginAmount    Decimal  @default(0) @db.Decimal(18, 2)
   npv             Decimal? @db.Decimal(18, 2)
+  // Structured engine output (schedule, cumulative cashflow, breakeven, assumptions) — see cashflowEngine.ts.
+  calculation     Json?
   approvedBy      String?
   approvedAt      DateTime?
   status          String   @default("draft")
@@ -854,7 +978,9 @@ model ContractDeviation {
 
 model ProjectGovernance {
   id                       String   @id @default(cuid())
-  projectCode               String   @unique
+  organizationId            String
+  organization              Organization @relation(fields: [organizationId], references: [id])
+  projectCode               String
   opportunityCode           String?
   orderAcknowledgementId    String?
   sponsor                   String?
@@ -862,7 +988,7 @@ model ProjectGovernance {
   programDirector           String?
   projectFinanceManager     String?
   resourceManager           String?
-  supplyManager             String?
+  supplyManager              String?
   procurementManager        String?
   scheduleStatus            String   @default("green")
   scopeStatus               String   @default("green")
@@ -880,6 +1006,8 @@ model ProjectGovernance {
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
+  @@unique([organizationId, projectCode])
+  @@index([organizationId])
   @@index([opportunityCode])
 }
 
@@ -928,6 +1056,8 @@ model ResourcePlan {
 
 model GovernanceBoard {
   id                  String   @id @default(cuid())
+  organizationId       String
+  organization         Organization @relation(fields: [organizationId], references: [id])
   projectGovernanceId  String?
   projectGovernance    ProjectGovernance? @relation(fields: [projectGovernanceId], references: [id])
   boardType           String
@@ -946,12 +1076,15 @@ model GovernanceBoard {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  @@index([organizationId])
   @@index([boardType, meetingDate])
   @@index([projectGovernanceId])
 }
 
 model TalentProfile {
   id                              String   @id @default(cuid())
+  organizationId                   String
+  organization                     Organization @relation(fields: [organizationId], references: [id])
   importBatchId                    String?
   name                            String
   age                             Int?
@@ -970,13 +1103,16 @@ model TalentProfile {
   createdAt                       DateTime @default(now())
   updatedAt                       DateTime @updatedAt
 
+  @@index([organizationId])
   @@index([currentRole])
   @@index([expectedRole])
 }
 
 model Ratecard {
   id                       String   @id @default(cuid())
-  ratecardCode              String   @unique
+  organizationId            String
+  organization              Organization @relation(fields: [organizationId], references: [id])
+  ratecardCode              String
   resourceType              String
   location                  String?
   source                    String?
@@ -993,5 +1129,7 @@ model Ratecard {
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
+  @@unique([organizationId, ratecardCode])
+  @@index([organizationId])
   @@index([resourceType, location])
 }

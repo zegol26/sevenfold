@@ -20,6 +20,7 @@ type DashboardUserRow = {
   fullName: string;
   status: string;
   legacySourceId: string | null;
+  organizationId: string | null;
   role: { code: string; permissions: unknown };
   client?: { legacySourceId: string | null; code: string } | null;
   resource?: { legacySourceId: string | null; id: string } | null;
@@ -66,14 +67,26 @@ async function getDashboardData(): Promise<DashboardData> {
 
 async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
   const db = getDb();
-  const user = await db.user.findUnique({
+  // email is no longer globally unique (scoped per organization); this resolves the
+  // first active-organization match, same as services/userService.ts#findUserByEmail.
+  const user = await db.user.findFirst({
     where: { email: email.toLowerCase() },
-    include: { role: true, client: true, resource: true },
+    include: { role: true, client: true, resource: true, organization: true },
+    orderBy: { createdAt: "asc" },
   });
 
   if (!user || user.status !== "ACTIVE") {
     return { ...emptyData(null), sessionEmail: email };
   }
+  const isPlatformRole = user.role.code === "ROLE_PLATFORM_ADMIN";
+  if (!isPlatformRole && (!user.organization || user.organization.status === "SUSPENDED" || user.organization.status === "CANCELLED")) {
+    return { ...emptyData(null), sessionEmail: email };
+  }
+  if (!user.organizationId) {
+    // Platform admins don't have a single-tenant dashboard yet (Phase 2 provisioning console).
+    return { ...emptyData(null), sessionEmail: email };
+  }
+  const organizationId = user.organizationId;
 
   const [
     users,
@@ -100,31 +113,31 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     auditLogs,
   ] = await Promise.all([
     db.user.findMany({
-      where: { status: { not: "DELETED" } },
+      where: { status: { not: "DELETED" }, organizationId },
       include: { role: true, client: true, resource: true },
       orderBy: { createdAt: "desc" },
     }),
-    db.client.findMany({ orderBy: { name: "asc" } }),
-    db.project.findMany({ include: { client: true }, orderBy: { name: "asc" } }),
-    db.resource.findMany({ orderBy: { createdAt: "desc" } }),
-    db.assignment.findMany({ include: { client: true, project: true, resource: true }, orderBy: { createdAt: "desc" } }),
-    db.invoice.findMany({ include: { client: true, project: true, grRecord: true }, orderBy: { createdAt: "desc" } }),
-    db.document.findMany({ orderBy: { createdAt: "desc" } }),
-    db.clientFeedback.findMany({ include: { candidate: true, client: true, project: true }, orderBy: { createdAt: "desc" } }),
-    db.timesheet.findMany({ include: { resource: true, assignment: true }, orderBy: { createdAt: "desc" } }),
-    db.overtimeRequest.findMany({ include: { resource: true, assignment: true }, orderBy: { createdAt: "desc" } }),
-    db.leaveRequest.findMany({ include: { resource: true, assignment: true }, orderBy: { createdAt: "desc" } }),
-    db.grRecord.findMany({ include: { client: true, project: true }, orderBy: { createdAt: "desc" } }),
-    db.projectApplication.findMany({ include: { resource: true, project: { include: { client: true } } }, orderBy: { createdAt: "desc" } }),
-    getOpportunityDashboardRows(),
-    safeFindSystemSettingsByPrefix("sevenfold.entity_framework_version.opportunity."),
-    getProjectExecutionRegistry(),
-    getDeliveryGovernanceRegistry(),
-    getTalentPlanningRegistry(),
-    getRatecardRegistry(),
-    getFrameworkControlPlane(),
-    getTemplateRegistry(),
-    db.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 50, include: { actor: true } }),
+    db.client.findMany({ where: { organizationId }, orderBy: { name: "asc" } }),
+    db.project.findMany({ where: { client: { organizationId } }, include: { client: true }, orderBy: { name: "asc" } }),
+    db.resource.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" } }),
+    db.assignment.findMany({ where: { client: { organizationId } }, include: { client: true, project: true, resource: true }, orderBy: { createdAt: "desc" } }),
+    db.invoice.findMany({ where: { client: { organizationId } }, include: { client: true, project: true, grRecord: true }, orderBy: { createdAt: "desc" } }),
+    db.document.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" } }),
+    db.clientFeedback.findMany({ where: { client: { organizationId } }, include: { candidate: true, client: true, project: true }, orderBy: { createdAt: "desc" } }),
+    db.timesheet.findMany({ where: { resource: { organizationId } }, include: { resource: true, assignment: true }, orderBy: { createdAt: "desc" } }),
+    db.overtimeRequest.findMany({ where: { resource: { organizationId } }, include: { resource: true, assignment: true }, orderBy: { createdAt: "desc" } }),
+    db.leaveRequest.findMany({ where: { resource: { organizationId } }, include: { resource: true, assignment: true }, orderBy: { createdAt: "desc" } }),
+    db.grRecord.findMany({ where: { client: { organizationId } }, include: { client: true, project: true }, orderBy: { createdAt: "desc" } }),
+    db.projectApplication.findMany({ where: { resource: { organizationId } }, include: { resource: true, project: { include: { client: true } } }, orderBy: { createdAt: "desc" } }),
+    getOpportunityDashboardRows(organizationId),
+    safeFindSystemSettingsByPrefix(organizationId, "sevenfold.entity_framework_version.opportunity."),
+    getProjectExecutionRegistry(organizationId),
+    getDeliveryGovernanceRegistry(organizationId),
+    getTalentPlanningRegistry(organizationId),
+    getRatecardRegistry(organizationId),
+    getFrameworkControlPlane(organizationId),
+    getTemplateRegistry(organizationId),
+    db.auditLog.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" }, take: 50, include: { actor: true } }),
   ]);
 
   const latestFeedbackByCandidate = new Map(feedbacks.map((feedback) => [feedback.candidateId, feedback]));
@@ -458,6 +471,7 @@ function mapOpportunityAnalysis(opportunities: Array<{
     cashGap: unknown;
     marginAmount: unknown;
     npv: unknown;
+    calculation: unknown;
     approvedBy: string | null;
     approvedAt: Date | null;
     status: string;
@@ -589,6 +603,9 @@ function mapOpportunityAnalysis(opportunities: Array<{
       cost_timing: "",
       cash_impact: decimalToString(option.cashGap),
       margin_impact: decimalToString(option.marginAmount),
+      npv: decimalToString(option.npv),
+      break_even_date: calculationField(option.calculation, "breakEvenDate"),
+      working_capital_days: calculationField(option.calculation, "workingCapitalDays"),
       approved_by: option.approvedBy || "",
       approved_at: formatDbDateTime(option.approvedAt),
       status: option.status,
@@ -645,13 +662,20 @@ function auditMetadataValue(metadata: unknown, key: string) {
   return value === undefined || value === null ? "" : String(value);
 }
 
-async function getFrameworkControlPlane(): Promise<FrameworkControlPlane> {
-  return getActiveFrameworkSettings();
+function calculationField(calculation: unknown, key: string) {
+  if (!calculation || typeof calculation !== "object" || Array.isArray(calculation)) return "";
+  const value = (calculation as Record<string, unknown>)[key];
+  return value === undefined || value === null ? "" : String(value);
 }
 
-async function getOpportunityDashboardRows(): Promise<Parameters<typeof mapOpportunityAnalysis>[0]> {
+async function getFrameworkControlPlane(organizationId: string): Promise<FrameworkControlPlane> {
+  return getActiveFrameworkSettings(organizationId);
+}
+
+async function getOpportunityDashboardRows(organizationId: string): Promise<Parameters<typeof mapOpportunityAnalysis>[0]> {
   try {
     return await getDb().opportunity.findMany({
+      where: { organizationId },
       include: {
         scenarios: { include: { commodityLines: true } },
         risks: true,
@@ -671,9 +695,9 @@ async function getOpportunityDashboardRows(): Promise<Parameters<typeof mapOppor
   }
 }
 
-async function safeFindSystemSettingsByPrefix(prefix: string): Promise<Array<{ value: unknown }>> {
+async function safeFindSystemSettingsByPrefix(organizationId: string, prefix: string): Promise<Array<{ value: unknown }>> {
   try {
-    return await getDb().systemSetting.findMany({ where: { key: { startsWith: prefix } } });
+    return await getDb().systemSetting.findMany({ where: { organizationId, key: { startsWith: prefix } } });
   } catch (error) {
     if (isMissingPrismaTableError(error)) return [];
     throw error;
@@ -692,6 +716,7 @@ function userToAppUser(row: DashboardUserRow): NonNullable<DashboardData["user"]
     email: row.email,
     full_name: row.fullName,
     role_id: row.role.code as RoleId,
+    organization_id: row.organizationId || "",
     client_id: row.client?.legacySourceId || row.client?.code || "",
     project_id: "",
     employee_id: row.resource?.legacySourceId || "",

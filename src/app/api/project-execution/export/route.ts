@@ -11,8 +11,9 @@ export async function GET() {
   if (!session?.email) return new NextResponse("Unauthorized", { status: 401 });
   const user = await findUserByEmail(session.email);
   if (!user || user.status !== "ACTIVE" || !canExport(user.role.code)) return new NextResponse("Forbidden", { status: 403 });
+  if (!user.organizationId) return new NextResponse("Forbidden", { status: 403 });
 
-  const registry = await getProjectExecutionRegistry();
+  const registry = await getProjectExecutionRegistry(user.organizationId);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(registry.projects.map((project) => ({
     ...project,

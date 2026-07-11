@@ -10,8 +10,8 @@ export const DELIVERY_GOVERNANCE_KEY = "sevenfold.delivery_governance";
 export const DELIVERY_GOVERNANCE_CACHE_TAG = "delivery-governance";
 
 export const getDeliveryGovernanceRegistry = unstable_cache(
-  async (): Promise<DeliveryGovernanceRegistry> => {
-    const setting = await getDb().systemSetting.findUnique({ where: { key: DELIVERY_GOVERNANCE_KEY } });
+  async (organizationId: string): Promise<DeliveryGovernanceRegistry> => {
+    const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: DELIVERY_GOVERNANCE_KEY } } });
     if (!setting) return emptyDeliveryGovernanceRegistry();
     const value = setting.value as Partial<DeliveryGovernanceRegistry>;
     return {
@@ -25,8 +25,8 @@ export const getDeliveryGovernanceRegistry = unstable_cache(
   { revalidate: 300, tags: [DELIVERY_GOVERNANCE_CACHE_TAG] },
 );
 
-export async function getDeliveryGovernanceRegistryForMutation(): Promise<DeliveryGovernanceRegistry> {
-  const setting = await getDb().systemSetting.findUnique({ where: { key: DELIVERY_GOVERNANCE_KEY } });
+export async function getDeliveryGovernanceRegistryForMutation(organizationId: string): Promise<DeliveryGovernanceRegistry> {
+  const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: DELIVERY_GOVERNANCE_KEY } } });
   if (!setting) return emptyDeliveryGovernanceRegistry();
   const value = setting.value as Partial<DeliveryGovernanceRegistry>;
   return {
@@ -36,11 +36,12 @@ export async function getDeliveryGovernanceRegistryForMutation(): Promise<Delive
   };
 }
 
-export async function saveDeliveryGovernanceRegistry(value: DeliveryGovernanceRegistry) {
+export async function saveDeliveryGovernanceRegistry(organizationId: string, value: DeliveryGovernanceRegistry) {
   const nextValue = { ...value, updatedAt: new Date().toISOString() };
   await getDb().systemSetting.upsert({
-    where: { key: DELIVERY_GOVERNANCE_KEY },
+    where: { organizationId_key: { organizationId, key: DELIVERY_GOVERNANCE_KEY } },
     create: {
+      organizationId,
       key: DELIVERY_GOVERNANCE_KEY,
       value: nextValue,
       description: "Sevenfold change request, quality incident, and governance registry.",

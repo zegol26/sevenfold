@@ -922,28 +922,22 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
         </TabsList>
 
         <TabsContent value="opportunities">
-          <Card className="mb-4">
-            <CardHeader>
-              <CardTitle>Create Opportunity ID</CardTitle>
-              <CardDescription>Account Manager creates the commercial opportunity baseline. New records use the latest active framework version.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form action={createOpportunityAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
-                <Input name="opportunity_id" placeholder="Opportunity ID optional" />
-                <Input name="customer_name" placeholder="Customer name" required />
-                <Input name="owner" placeholder="Owner / Account Manager" />
-                <Input name="solution_architect" placeholder="Solution Architect" />
-                <Select name="deal_type" required>
-                  <SelectTrigger><SelectValue placeholder="Deal type" /></SelectTrigger>
-                  <SelectContent>{dealTypes.map((deal) => <SelectItem key={deal.id} value={deal.name}>{deal.name}</SelectItem>)}</SelectContent>
-                </Select>
-                <Input name="customer_segment" placeholder="Customer segment" />
-                <Input name="opportunity_status" defaultValue="draft" placeholder="Status" required />
-                <Textarea className="xl:col-span-4" name="scope_summary" placeholder="Scope summary" />
-                <Button className="xl:col-span-4" type="submit"><Plus className="h-4 w-4" /> Create Opportunity</Button>
-              </form>
-            </CardContent>
-          </Card>
+          <OpportunityFormCard title="Create Opportunity ID">
+            <form action={createOpportunityAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+              <Input name="opportunity_id" placeholder="Opportunity ID optional" />
+              <Input name="customer_name" placeholder="Customer name" required />
+              <Input name="owner" placeholder="Owner / Account Manager" />
+              <Input name="solution_architect" placeholder="Solution Architect" />
+              <Select name="deal_type" required>
+                <SelectTrigger><SelectValue placeholder="Deal type" /></SelectTrigger>
+                <SelectContent>{dealTypes.map((deal) => <SelectItem key={deal.id} value={deal.name}>{deal.name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Input name="customer_segment" placeholder="Customer segment" />
+              <Input name="opportunity_status" defaultValue="draft" placeholder="Status" required />
+              <Textarea className="xl:col-span-4" name="scope_summary" placeholder="Scope summary" />
+              <Button className="xl:col-span-4" type="submit"><Plus className="h-4 w-4" /> Create Opportunity</Button>
+            </form>
+          </OpportunityFormCard>
           <DataTable
             headers={["Opportunity", "Customer", "Deal", "Status", "Framework", "Owner", "Commercial Scenario"]}
             rows={analysis.opportunities}
@@ -1220,25 +1214,30 @@ function CashflowPanel({ data }: { data: DashboardData }) {
           <Input name="currency" defaultValue="USD" placeholder="Currency" />
           <Input name="dso_days" defaultValue="30" type="number" placeholder="DSO days" />
           <Input name="payment_terms" placeholder="Payment terms" />
+          <Input name="invoice_date" type="date" placeholder="Invoice date" required />
+          <Input name="cost_date" type="date" placeholder="Cost incurred date (optional, defaults to invoice date)" />
+          <Input name="discount_rate_percent" defaultValue="10" type="number" step="0.1" placeholder="NPV discount rate % annual" />
           <MoneyInput name="gross_invoice" placeholder="Gross invoice" />
           <MoneyInput name="incentive_discount" placeholder="Incentive / discount" />
           <MoneyInput name="withholding_tax" placeholder="Withholding tax" />
-          <MoneyInput name="revenue_timing_amount" placeholder="Revenue timing amount" />
-          <MoneyInput name="cost_timing_amount" placeholder="Cost timing amount" />
-          <MoneyInput name="npv" placeholder="NPV optional" />
-          <Textarea name="milestone_definition" placeholder="Milestone definition" />
-          <Textarea name="invoice_schedule" placeholder="Invoice schedule" />
-          <Textarea name="revenue_timing" placeholder="Revenue timing" />
-          <Textarea name="cost_timing" placeholder="Cost timing" />
+          <MoneyInput name="cost_timing_amount" placeholder="Cost amount" />
+          <Textarea name="milestone_definition" placeholder="Milestone definition (notes)" />
+          <Textarea name="invoice_schedule" placeholder="Invoice schedule (notes)" />
+          <Textarea name="revenue_timing" placeholder="Revenue timing (notes)" />
+          <Textarea name="cost_timing" placeholder="Cost timing (notes)" />
           <Alert className="2xl:col-span-5">
-            <AlertTitle>Configurable Formula</AlertTitle>
-            <AlertDescription>cash impact = revenue timing amount - discount - withholding tax - cost timing amount. margin impact = gross invoice - discount - withholding tax - cost timing amount.</AlertDescription>
+            <AlertTitle>Calculated, not manually entered</AlertTitle>
+            <AlertDescription>
+              Cash inflow date = invoice date + DSO days. Net invoice = gross invoice - discount - withholding tax.
+              Cash gap, margin, break-even date, working-capital days, and NPV (at the discount rate above) are all
+              derived from these dated cash events, not typed in by hand.
+            </AlertDescription>
           </Alert>
           <Button className="2xl:col-span-5" type="submit"><Plus className="h-4 w-4" /> Create Cashflow Option</Button>
         </form>
       </OpportunityFormCard>
       <DataTable
-        headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Impact", "Margin", "Approval", "Action"]}
+        headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Approval", "Action"]}
         rows={analysis.cashflowOptions}
         render={(option) => (
           <TableRow key={`${option.opportunity_id}-${option.option_id}`}>
@@ -1249,6 +1248,9 @@ function CashflowPanel({ data }: { data: DashboardData }) {
             <TableCell>{money(option.incentive_discount)}</TableCell>
             <TableCell>{money(option.cash_impact)}</TableCell>
             <TableCell>{money(option.margin_impact)}</TableCell>
+            <TableCell>{money(option.npv)}</TableCell>
+            <TableCell>{option.break_even_date || "-"}</TableCell>
+            <TableCell>{option.working_capital_days || "-"}</TableCell>
             <TableCell><StatusBadge value={option.status} /></TableCell>
             <TableCell>
               <form action={approveCashflowOptionAction} className="flex gap-2">

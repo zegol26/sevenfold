@@ -15,8 +15,11 @@ export async function GET() {
   if (!user || user.status !== "ACTIVE" || !canExport(user.role.code)) {
     return new NextResponse("Forbidden", { status: 403 });
   }
+  if (!user.organizationId) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
 
-  const opportunities = await getOpportunityRowsForExport();
+  const opportunities = await getOpportunityRowsForExport(user.organizationId);
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(opportunities.map((opportunity) => ({
@@ -94,9 +97,10 @@ export async function GET() {
   });
 }
 
-async function getOpportunityRowsForExport() {
+async function getOpportunityRowsForExport(organizationId: string) {
   try {
     return await getDb().opportunity.findMany({
+      where: { organizationId },
       include: {
         scenarios: { include: { commodityLines: true } },
         risks: true,

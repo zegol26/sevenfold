@@ -13,15 +13,18 @@ export default async function DocumentViewerPage({
   if (!session?.email) redirect("/");
 
   const { documentId } = await params;
-  const document = await getDb().document.findFirst({
-    where: { OR: [{ legacySourceId: documentId }, { id: documentId }] },
-  });
-  if (!document) notFound();
-  const user = await getDb().user.findUnique({
+  const user = await getDb().user.findFirst({
     where: { email: session.email.toLowerCase() },
     include: { role: true, resource: true },
   });
-  if (!user || user.status !== "ACTIVE" || !canViewDocument(user, document)) {
+  if (!user || user.status !== "ACTIVE" || !user.organizationId) {
+    redirect("/unauthorized");
+  }
+  const document = await getDb().document.findFirst({
+    where: { organizationId: user.organizationId, OR: [{ legacySourceId: documentId }, { id: documentId }] },
+  });
+  if (!document) notFound();
+  if (!canViewDocument(user, document)) {
     redirect("/unauthorized");
   }
 

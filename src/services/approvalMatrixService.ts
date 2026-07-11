@@ -9,8 +9,8 @@ export type ApprovalMatrixRequest = {
   valueUsd?: number;
 };
 
-export async function resolveApprovalRules(input: ApprovalMatrixRequest): Promise<ApprovalRuleSetting[]> {
-  const config = await getActiveFrameworkSettings();
+export async function resolveApprovalRules(organizationId: string, input: ApprovalMatrixRequest): Promise<ApprovalRuleSetting[]> {
+  const config = await getActiveFrameworkSettings(organizationId);
   const matrix = config.approvalMatrices.find((item) => (
     item.workflow === input.workflow &&
     item.decision === input.decision &&
@@ -25,8 +25,8 @@ export async function resolveApprovalRules(input: ApprovalMatrixRequest): Promis
     .sort((left, right) => Number(left.sequence) - Number(right.sequence));
 }
 
-export async function requireApprovalMatrix(input: ApprovalMatrixRequest) {
-  const rules = await resolveApprovalRules(input);
+export async function requireApprovalMatrix(organizationId: string, input: ApprovalMatrixRequest) {
+  const rules = await resolveApprovalRules(organizationId, input);
   if (!rules.length) {
     throw new Error(`Approval matrix ${input.workflow} / ${input.decision} has no active rules.`);
   }

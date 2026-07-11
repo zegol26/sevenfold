@@ -44,17 +44,20 @@ function mergeFrameworkSettings(value?: Partial<FrameworkControlPlane> | null, u
   };
 }
 
+// organizationId is part of the cache key (unstable_cache keys on its arguments), so each
+// tenant's settings are cached independently. The revalidation tag stays shared across
+// tenants for simplicity: a save in one org causes a cache miss (not a leak) for others.
 export const getActiveFrameworkSettings = unstable_cache(
-  async (): Promise<FrameworkControlPlane> => {
-    const setting = await getDb().systemSetting.findUnique({ where: { key: CONTROL_PLANE_KEY } });
+  async (organizationId: string): Promise<FrameworkControlPlane> => {
+    const setting = await getDb().systemSetting.findUnique({ where: { organizationId_key: { organizationId, key: CONTROL_PLANE_KEY } } });
     return mergeFrameworkSettings(setting?.value as Partial<FrameworkControlPlane> | undefined, setting?.updatedAt);
   },
   [CONTROL_PLANE_KEY],
   { revalidate: 300, tags: [FRAMEWORK_SETTINGS_CACHE_TAG] },
 );
 
-export async function getLatestActiveFrameworkVersion() {
-  const settings = await getActiveFrameworkSettings();
+export async function getLatestActiveFrameworkVersion(organizationId: string) {
+  const settings = await getActiveFrameworkSettings(organizationId);
   const activeVersions = settings.frameworkVersions
     .filter((item) => item.status === "active")
     .sort((a, b) => String(b.effectiveAt || b.version).localeCompare(String(a.effectiveAt || a.version)));
