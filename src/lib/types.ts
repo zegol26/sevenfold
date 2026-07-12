@@ -594,6 +594,10 @@ export type DashboardData = {
     invoices?: number;
   };
   users: RecordMap[];
+  // Lightweight name+role directory for assignment dropdowns (Sponsor, Project Leader,
+  // etc.) - unlike `users`, not gated to Super Admin, since names/roles aren't sensitive
+  // and forms across the app need to assign people without a full user-management view.
+  team_directory: Option[];
   candidates: RecordMap[];
   employees: RecordMap[];
   clients: Option[];

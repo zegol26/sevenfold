@@ -1,20 +1,27 @@
 "use client";
 
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import {
+  ArrowLeft,
   BriefcaseBusiness,
   CalendarDays,
   CheckCircle2,
+  ChevronUp,
   ClipboardCheck,
   DollarSign,
+  Download,
   FileText,
   FolderOpen,
   Handshake,
   LayoutDashboard,
   LogOut,
+  Pencil,
   Plus,
   ReceiptText,
+  RefreshCw,
   Send,
   Settings,
   ShieldCheck,
@@ -79,6 +86,9 @@ import {
   upsertRatecardResourceAction,
   upsertSiteHandlerAction,
   transitionTemplateAction,
+  updateOpportunityAction,
+  updateProposalScenarioAction,
+  updateCashflowOptionAction,
   uploadTemplateAction,
 } from "@/app/actions";
 import type { DashboardData, RecordMap, RoleId } from "@/lib/types";
@@ -109,6 +119,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Toast, ToastDescription, ToastProvider, ToastTitle, ToastViewport } from "@/components/ui/toast";
+import { CashflowChart } from "@/components/cashflow-chart";
+import { VersionBadge } from "@/components/version-badge";
+import type { ChangelogEntry } from "@/lib/changelog";
 import { cn } from "@/lib/utils";
 
 type Section =
@@ -136,13 +149,20 @@ type Section =
 export function DashboardClient({
   data,
   initialSection,
+  initialOpportunityId,
   isSuperAdmin,
+  appVersion,
+  changelog,
 }: {
   data: DashboardData;
   initialSection?: string;
+  initialOpportunityId?: string;
   isSuperAdmin: boolean;
+  appVersion: string;
+  changelog: ChangelogEntry[];
 }) {
   const [section, setSection] = useState<Section>(coerceSection(initialSection));
+  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(initialOpportunityId || null);
   const [clientForCandidate, setClientForCandidate] = useState("");
   const [clientForProject, setClientForProject] = useState(data.clients[0]?.id || "");
   const [feedbackCandidate, setFeedbackCandidate] = useState<RecordMap | null>(null);
@@ -160,17 +180,28 @@ export function DashboardClient({
     [data.projects, clientForProject],
   );
 
+  // Navigating anywhere from the sidebar is client-state only (no URL change), so it
+  // wouldn't otherwise clear a detail view opened via the opportunityId query param.
+  function handleSetSection(next: Section) {
+    setSelectedOpportunityId(null);
+    setSection(next);
+  }
+
   return (
     <ToastProvider>
       <div className="min-h-screen bg-background text-foreground">
         <div className="grid min-h-screen grid-cols-[272px_minmax(0,1fr)] max-lg:grid-cols-1">
-          <Sidebar nav={nav} section={activeSection} setSection={setSection} />
+          <Sidebar nav={nav} section={activeSection} setSection={handleSetSection} />
           <main className="min-w-0">
-            <Topbar user={data.user} section={activeSection} />
+            <Topbar user={data.user} section={activeSection} appVersion={appVersion} changelog={changelog} />
             <div className="mx-auto grid max-w-[1600px] gap-5 p-6 max-sm:p-4">
-              {activeSection === "home" && <Home data={data} />}
+              {activeSection === "home" && <Home data={data} setSection={handleSetSection} />}
               {activeSection === "control" && <ControlPlanePanel auditLogs={data.audit_logs || []} settings={data.framework_settings} />}
-              {activeSection === "opportunity" && <OpportunityPanel data={data} />}
+              {activeSection === "opportunity" && (
+                selectedOpportunityId
+                  ? <OpportunityDetailPage opportunityId={selectedOpportunityId} data={data} />
+                  : <OpportunityPanel data={data} />
+              )}
               {activeSection === "cashflow" && <CashflowPanel data={data} />}
               {activeSection === "sales_submission" && <SdsPanel data={data} />}
               {activeSection === "order_ack" && <SdoaPanel data={data} />}
@@ -301,12 +332,25 @@ function Sidebar({
   );
 }
 
-function Topbar({ user, section }: { user: DashboardData["user"]; section: Section }) {
+function Topbar({
+  user,
+  section,
+  appVersion,
+  changelog,
+}: {
+  user: DashboardData["user"];
+  section: Section;
+  appVersion: string;
+  changelog: ChangelogEntry[];
+}) {
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-card/95 px-6 backdrop-blur max-sm:h-auto max-sm:flex-col max-sm:items-start max-sm:gap-3 max-sm:px-4 max-sm:py-4">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">{titleFor(section)}</h1>
-        <p className="text-sm text-muted-foreground">Secure workflow operations dashboard</p>
+      <div className="flex items-center gap-3">
+        <div>
+          <h1 className="text-lg font-semibold text-foreground">{titleFor(section)}</h1>
+          <p className="text-sm text-muted-foreground">Secure workflow operations dashboard</p>
+        </div>
+        <VersionBadge version={appVersion} changelog={changelog} />
       </div>
       <div className="flex items-center gap-3">
         <div className="text-right max-sm:text-left">
@@ -324,10 +368,13 @@ function Topbar({ user, section }: { user: DashboardData["user"]; section: Secti
   );
 }
 
-function Home({ data }: { data: DashboardData }) {
+function Home({ data, setSection }: { data: DashboardData; setSection: (section: Section) => void }) {
   if (data.user?.role_id === "ROLE_EMPLOYEE") {
     return <EmployeeHome data={data} />;
   }
+
+  const isSponsorViewer = SPONSOR_EQUIVALENT_ROLES.includes(data.user?.role_id as RoleId);
+  const pendingSds = (data.opportunity_analysis?.sdsRecords || []).filter((sds) => sds.decision === "pending");
 
   const metrics = [
     { label: "Candidates", value: data.metrics.candidates, icon: <Users className="h-4 w-4 text-blue-600" /> },
@@ -341,6 +388,16 @@ function Home({ data }: { data: DashboardData }) {
   ];
   return (
     <>
+      {isSponsorViewer && pendingSds.length > 0 && (
+        <Alert className="border-amber-300 bg-amber-50">
+          <Send className="float-left me-2 h-4 w-4 text-amber-600" />
+          <AlertTitle>{pendingSds.length} Sales Decision Submission{pendingSds.length === 1 ? "" : "s"} pending your approval</AlertTitle>
+          <AlertDescription className="flex items-center justify-between gap-4">
+            <span>{pendingSds.map((sds) => sds.opportunity_id).join(", ")}</span>
+            <Button size="sm" onClick={() => setSection("sales_submission")} type="button">Review now</Button>
+          </AlertDescription>
+        </Alert>
+      )}
       <div className="grid grid-cols-4 gap-4 max-xl:grid-cols-2 max-sm:grid-cols-1">
         {metrics.map((metric) => (
           <Card key={metric.label}>
@@ -844,17 +901,22 @@ function ControlPlanePanel({ auditLogs, settings }: { auditLogs: RecordMap[]; se
   );
 }
 
-function ControlPlaneTable({ headers, rows }: { headers: string[]; rows: RecordMap[] }) {
+function ControlPlaneTable({ headers, rows, compact }: { headers: string[]; rows: RecordMap[]; compact?: boolean }) {
   return (
     <Card className="mb-4">
       <CardContent className="p-0">
         <DataTable
           headers={headers}
           rows={rows}
+          compact={compact}
           render={(row, index) => (
             <TableRow key={`${headers[0]}-${index}`}>
               {Object.values(row).map((value, cellIndex) => (
-                <TableCell key={`${value}-${cellIndex}`}>{cellIndex === Object.values(row).length - 1 ? <StatusBadge value={value} /> : value}</TableCell>
+                <TableCell key={`${value}-${cellIndex}`}>
+                  {cellIndex === Object.values(row).length - 1
+                    ? (compact ? <OpportunityStatusBadge value={value} /> : <StatusBadge value={value} />)
+                    : value}
+                </TableCell>
               ))}
             </TableRow>
           )}
@@ -900,10 +962,10 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
   return (
     <section className="grid gap-5">
       <div className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
-        <MetricCard label="Opportunities" value={String(analysis.opportunities.length)} />
-        <MetricCard label="Scenarios" value={String(analysis.scenarios.length)} />
-        <MetricCard label="Commodity Lines" value={String(analysis.commodityLines.length)} />
-        <MetricCard label="Open Risks" value={String(analysis.risks.filter((risk) => risk.status !== "closed").length)} />
+        <KpiTile label="Opportunities" value={String(analysis.opportunities.length)} />
+        <KpiTile label="Scenarios" value={String(analysis.scenarios.length)} />
+        <KpiTile label="Commodity Lines" value={String(analysis.commodityLines.length)} />
+        <KpiTile label="Open Risks" value={String(analysis.risks.filter((risk) => risk.status !== "closed").length)} />
       </div>
 
       <div className="grid grid-cols-2 gap-5 max-xl:grid-cols-1">
@@ -922,7 +984,8 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
         </TabsList>
 
         <TabsContent value="opportunities">
-          <OpportunityFormCard title="Create Opportunity ID">
+          <CommandBar exportHref="/api/opportunities/export" />
+          <InlineFormPanel title="Create Opportunity ID" toggleLabel="Create">
             <form action={createOpportunityAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <Input name="opportunity_id" placeholder="Opportunity ID optional" />
               <Input name="customer_name" placeholder="Customer name" required />
@@ -933,30 +996,23 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
                 <SelectContent>{dealTypes.map((deal) => <SelectItem key={deal.id} value={deal.name}>{deal.name}</SelectItem>)}</SelectContent>
               </Select>
               <Input name="customer_segment" placeholder="Customer segment" />
-              <Input name="opportunity_status" defaultValue="draft" placeholder="Status" required />
+              <NativeSelect name="opportunity_status" defaultValue="draft" options={OPPORTUNITY_STATUS_OPTIONS} required />
               <Textarea className="xl:col-span-4" name="scope_summary" placeholder="Scope summary" />
               <Button className="xl:col-span-4" type="submit"><Plus className="h-4 w-4" /> Create Opportunity</Button>
             </form>
-          </OpportunityFormCard>
+          </InlineFormPanel>
           <DataTable
-            headers={["Opportunity", "Customer", "Deal", "Status", "Framework", "Owner", "Commercial Scenario"]}
+            headers={["Opportunity", "Customer", "Deal", "Status", "Framework", "Owner", "Commercial Scenario", "Action"]}
             rows={analysis.opportunities}
+            compact
             render={(opportunity) => (
-              <TableRow key={opportunity.opportunity_id}>
-                <TableCell className="font-mono text-xs">{opportunity.opportunity_id}</TableCell>
-                <TableCell>{opportunity.customer_name}</TableCell>
-                <TableCell>{opportunity.deal_type}</TableCell>
-                <TableCell><StatusBadge value={opportunity.opportunity_status} /></TableCell>
-                <TableCell>{opportunity.framework_version || "-"}</TableCell>
-                <TableCell>{opportunity.owner || "-"}</TableCell>
-                <TableCell>{opportunity.commercial_scenario || "-"}</TableCell>
-              </TableRow>
+              <OpportunityTableRow key={opportunity.opportunity_id} opportunity={opportunity} dealTypes={dealTypes} />
             )}
           />
         </TabsContent>
 
         <TabsContent value="scenarios">
-          <OpportunityFormCard title="Create Proposal Scenario">
+          <InlineFormPanel title="Create Proposal Scenario" toggleLabel="Create">
             <form action={createProposalScenarioAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <OpportunitySelect opportunities={opportunityOptions} />
               <Input name="scenario_id" placeholder="Scenario ID optional" />
@@ -965,22 +1021,12 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
               <Textarea className="xl:col-span-4" name="description" placeholder="Scenario description" />
               <Button className="xl:col-span-4" type="submit"><Plus className="h-4 w-4" /> Create Scenario</Button>
             </form>
-          </OpportunityFormCard>
+          </InlineFormPanel>
           <DataTable
-            headers={["Opportunity", "Scenario", "Name", "Currency", "Cost", "Price", "Margin", "Status"]}
+            headers={["Opportunity", "Scenario", "Name", "Currency", "Cost", "Price", "Margin", "Status", "Action"]}
             rows={analysis.scenarios}
-            render={(scenario) => (
-              <TableRow key={`${scenario.opportunity_id}-${scenario.scenario_id}`}>
-                <TableCell className="font-mono text-xs">{scenario.opportunity_id}</TableCell>
-                <TableCell className="font-mono text-xs">{scenario.scenario_id}</TableCell>
-                <TableCell>{scenario.scenario_name}</TableCell>
-                <TableCell>{scenario.currency}</TableCell>
-                <TableCell>{money(scenario.total_cost)}</TableCell>
-                <TableCell>{money(scenario.total_price)}</TableCell>
-                <TableCell>{scenario.gross_margin || "-"}</TableCell>
-                <TableCell><StatusBadge value={scenario.status} /></TableCell>
-              </TableRow>
-            )}
+            compact
+            render={(scenario) => <ScenarioTableRow key={`${scenario.opportunity_id}-${scenario.scenario_id}`} scenario={scenario} />}
           />
         </TabsContent>
 
@@ -1007,18 +1053,19 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
           <DataTable
             headers={["Opportunity", "Scenario", "Commodity", "Qty", "Unit Cost", "Unit Price", "Resource", "Partner", "Procurement", "Project"]}
             rows={analysis.commodityLines}
+            compact
             render={(line) => (
               <TableRow key={`${line.opportunity_id}-${line.scenario_id}-${line.commodity_code}-${line.description}`}>
                 <TableCell className="font-mono text-xs">{line.opportunity_id}</TableCell>
                 <TableCell className="font-mono text-xs">{line.scenario_id}</TableCell>
                 <TableCell>{line.commodity_code}</TableCell>
-                <TableCell>{line.quantity}</TableCell>
-                <TableCell>{money(line.unit_cost)}</TableCell>
-                <TableCell>{money(line.unit_price)}</TableCell>
-                <TableCell>{money(line.resource_cost)}</TableCell>
-                <TableCell>{money(line.partner_cost)}</TableCell>
-                <TableCell>{money(line.procurement_cost)}</TableCell>
-                <TableCell>{money(line.project_cost)}</TableCell>
+                <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(line.unit_cost)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(line.unit_price)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(line.resource_cost)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(line.partner_cost)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(line.procurement_cost)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(line.project_cost)}</TableCell>
               </TableRow>
             )}
           />
@@ -1054,18 +1101,19 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
           <DataTable
             headers={["Opportunity", "Risk", "Domain", "Commodity", "Probability", "Impact", "Exposure After", "Occurrence", "Owner", "Status"]}
             rows={analysis.risks}
+            compact
             render={(risk) => (
               <TableRow key={`${risk.opportunity_id}-${risk.risk_id}`}>
                 <TableCell className="font-mono text-xs">{risk.opportunity_id}</TableCell>
                 <TableCell>{risk.risk_title}</TableCell>
                 <TableCell>{risk.risk_domain}</TableCell>
                 <TableCell>{risk.linked_commodity || "-"}</TableCell>
-                <TableCell>{risk.probability || "-"}</TableCell>
-                <TableCell>{money(risk.impact)}</TableCell>
-                <TableCell>{money(risk.exposure_after_mitigation)}</TableCell>
+                <TableCell className="text-right tabular-nums">{risk.probability || "-"}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(risk.impact)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(risk.exposure_after_mitigation)}</TableCell>
                 <TableCell>{risk.predicted_occurrence_date || "-"}</TableCell>
                 <TableCell>{risk.risk_owner || "-"}</TableCell>
-                <TableCell><StatusBadge value={risk.status} /></TableCell>
+                <TableCell><OpportunityStatusBadge value={risk.status} /></TableCell>
               </TableRow>
             )}
           />
@@ -1077,7 +1125,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
               <OpportunitySelect opportunities={opportunityOptions} />
               <Input name="scenario_id" placeholder="Scenario ID" />
               <Input name="decision" placeholder="Decision, e.g. SELECT_SCENARIO_A" required />
-              <Input name="status" defaultValue="draft" placeholder="Status" />
+              <NativeSelect name="status" defaultValue="draft" options={["draft", "approved", "rejected"]} required />
               <Select name="mark_commercial_scenario" defaultValue="false">
                 <SelectTrigger><SelectValue placeholder="Mark commercial scenario?" /></SelectTrigger>
                 <SelectContent>
@@ -1089,7 +1137,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
               <Button className="xl:col-span-4" type="submit">Save Pricing Decision</Button>
             </form>
           </OpportunityFormCard>
-          <ControlPlaneTable headers={["Opportunity", "Scenario", "Decision", "Comment", "Status"]} rows={analysis.pricingDecisions} />
+          <ControlPlaneTable headers={["Opportunity", "Scenario", "Decision", "Comment", "Status"]} rows={analysis.pricingDecisions} compact />
         </TabsContent>
 
         <TabsContent value="reuse">
@@ -1123,6 +1171,295 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
   );
 }
 
+function SectionBlock({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
+  return (
+    <div className="grid gap-3">
+      <div className="flex items-center gap-2">
+        <h2 className="text-base font-semibold">{title}</h2>
+        {typeof count === "number" && (
+          <span className="rounded bg-[#f0f0f0] px-2 py-0.5 text-xs font-semibold text-[#494847]">{count}</span>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function OpportunityDetailPage({ opportunityId, data }: { opportunityId: string; data: DashboardData }) {
+  const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
+  const opportunity = analysis.opportunities.find((row) => row.opportunity_id === opportunityId);
+  const dealTypes = data.framework_settings?.dealTypes || [];
+
+  if (!opportunity) {
+    return (
+      <section className="grid gap-4">
+        <Link href="?section=opportunity" className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Back to Opportunities
+        </Link>
+        <Alert variant="destructive">
+          <AlertTitle>Opportunity not found</AlertTitle>
+          <AlertDescription>&quot;{opportunityId}&quot; does not exist, or you don&apos;t have access to it.</AlertDescription>
+        </Alert>
+      </section>
+    );
+  }
+
+  const scenarios = analysis.scenarios.filter((row) => row.opportunity_id === opportunityId);
+  const commodityLines = analysis.commodityLines.filter((row) => row.opportunity_id === opportunityId);
+  const risks = analysis.risks.filter((row) => row.opportunity_id === opportunityId);
+  const pricingDecisions = analysis.pricingDecisions.filter((row) => row.opportunity_id === opportunityId);
+  const cashflowOptions = analysis.cashflowOptions.filter((row) => row.opportunity_id === opportunityId);
+  const sdsRecords = (analysis.sdsRecords || []).filter((row) => row.opportunity_id === opportunityId);
+  const sdoaRecords = (analysis.sdoaRecords || []).filter((row) => row.opportunity_id === opportunityId);
+
+  return (
+    <section className="grid gap-6">
+      <Link href="?section=opportunity" className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="h-4 w-4" /> Back to Opportunities
+      </Link>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle className="font-mono text-base">{opportunity.opportunity_id}</CardTitle>
+              <CardDescription>{opportunity.customer_name} - {opportunity.deal_type}</CardDescription>
+            </div>
+            <StatusBadge value={opportunity.opportunity_status} />
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <Info label="Owner" value={opportunity.owner} />
+            <Info label="Solution Architect" value={opportunity.solution_architect} />
+            <Info label="Framework Version" value={opportunity.framework_version} />
+            <Info label="Commercial Scenario" value={opportunity.commercial_scenario} />
+            <Info label="Customer Segment" value={opportunity.customer_segment} />
+            <Info label="Created" value={opportunity.created_at?.slice(0, 10)} />
+          </div>
+          {opportunity.scope_summary && (
+            <div className="rounded-md border bg-muted/20 p-3 text-sm">
+              <div className="text-xs uppercase text-muted-foreground">Scope Summary</div>
+              <p className="mt-1">{opportunity.scope_summary}</p>
+            </div>
+          )}
+          <OpportunityEditPanel opportunity={opportunity} dealTypes={dealTypes} />
+        </CardContent>
+      </Card>
+
+      <SectionBlock title="Scenarios" count={scenarios.length}>
+        <DataTable
+          headers={["Opportunity", "Scenario", "Name", "Currency", "Cost", "Price", "Margin", "Status", "Action"]}
+          rows={scenarios}
+          compact
+          render={(scenario) => <ScenarioTableRow key={`${scenario.opportunity_id}-${scenario.scenario_id}`} scenario={scenario} />}
+        />
+      </SectionBlock>
+
+      <SectionBlock title="Commodity Cost Lines" count={commodityLines.length}>
+        <DataTable
+          headers={["Scenario", "Commodity", "Qty", "Unit Cost", "Unit Price", "Resource", "Partner", "Procurement", "Project"]}
+          rows={commodityLines}
+          compact
+          render={(line) => (
+            <TableRow key={`${line.scenario_id}-${line.commodity_code}-${line.description}`}>
+              <TableCell className="font-mono text-xs">{line.scenario_id}</TableCell>
+              <TableCell>{line.commodity_code}</TableCell>
+              <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(line.unit_cost)}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(line.unit_price)}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(line.resource_cost)}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(line.partner_cost)}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(line.procurement_cost)}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(line.project_cost)}</TableCell>
+            </TableRow>
+          )}
+        />
+      </SectionBlock>
+
+      <SectionBlock title="Risk Register" count={risks.length}>
+        <DataTable
+          headers={["Risk", "Domain", "Commodity", "Probability", "Impact", "Exposure After", "Occurrence", "Owner", "Status"]}
+          rows={risks}
+          compact
+          render={(risk) => (
+            <TableRow key={risk.risk_id}>
+              <TableCell>{risk.risk_title}</TableCell>
+              <TableCell>{risk.risk_domain}</TableCell>
+              <TableCell>{risk.linked_commodity || "-"}</TableCell>
+              <TableCell className="text-right tabular-nums">{risk.probability || "-"}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(risk.impact)}</TableCell>
+              <TableCell className="text-right tabular-nums">{money(risk.exposure_after_mitigation)}</TableCell>
+              <TableCell>{risk.predicted_occurrence_date || "-"}</TableCell>
+              <TableCell>{risk.risk_owner || "-"}</TableCell>
+              <TableCell><OpportunityStatusBadge value={risk.status} /></TableCell>
+            </TableRow>
+          )}
+        />
+      </SectionBlock>
+
+      <SectionBlock title="Pricing Decisions" count={pricingDecisions.length}>
+        <ControlPlaneTable headers={["Opportunity", "Scenario", "Decision", "Comment", "Status"]} rows={pricingDecisions} compact />
+      </SectionBlock>
+
+      <SectionBlock title="Cashflow Options" count={cashflowOptions.length}>
+        {cashflowOptions.length > 1 && <CashflowOptionComparison options={cashflowOptions} />}
+        <DataTable
+          headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Trend", "Approval", "Action"]}
+          rows={cashflowOptions}
+          compact
+          render={(option) => <CashflowOptionTableRow key={`${option.opportunity_id}-${option.option_id}`} option={option} compact={false} />}
+        />
+      </SectionBlock>
+
+      {(sdsRecords.length > 0 || sdoaRecords.length > 0) && (
+        <SectionBlock title="Sales Decision & Order Acknowledgement History">
+          <div className="grid gap-4">
+            {sdsRecords.length > 0 && (
+              <ControlPlaneTable compact headers={["SDS", "Scenario", "Cashflow", "Decision", "Approver"]} rows={sdsRecords.map((row) => ({
+                sds_id: row.sds_id, selected_scenario: row.selected_scenario, selected_cashflow: row.selected_cashflow, decision: row.decision, approver: row.approver,
+              }))} />
+            )}
+            {sdoaRecords.length > 0 && (
+              <ControlPlaneTable compact headers={["SDOA", "PO Number", "Outcome", "Sponsor"]} rows={sdoaRecords.map((row) => ({
+                sdoa_id: row.sdoa_id, received_po_number: row.received_po_number, outcome: row.outcome, sponsor: row.sponsor,
+              }))} />
+            )}
+          </div>
+        </SectionBlock>
+      )}
+    </section>
+  );
+}
+
+function OpportunityEditPanel({ opportunity, dealTypes }: { opportunity: RecordMap; dealTypes: { id: string; name: string }[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <Button type="button" variant="outline" onClick={() => setOpen((value) => !value)}>
+        {open ? <ChevronUp className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+        {open ? "Close" : "Edit Opportunity"}
+      </Button>
+      {open && (
+        <div className="mt-4 border-t pt-4">
+          <OpportunityEditForm opportunity={opportunity} dealTypes={dealTypes} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OpportunityEditForm({
+  opportunity,
+  dealTypes,
+}: {
+  opportunity: RecordMap;
+  dealTypes: { id: string; name: string }[];
+}) {
+  // No onClick-driven auto-close here: collapsing the row/panel synchronously in the
+  // submit button's onClick would unmount the <form> before the browser's native
+  // submit event fires, silently dropping the server action call entirely (found via
+  // Playwright UAT - see e2e/opportunity-cashflow.spec.ts). The user closes manually
+  // via the Edit/Close toggle once they see the saved values reflected above.
+  return (
+    <form action={updateOpportunityAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+      <input type="hidden" name="opportunity_id" value={opportunity.opportunity_id} />
+      <Input name="customer_name" defaultValue={opportunity.customer_name} placeholder="Customer name" required />
+      <Input name="owner" defaultValue={opportunity.owner} placeholder="Owner / Account Manager" />
+      <Input name="solution_architect" defaultValue={opportunity.solution_architect} placeholder="Solution Architect" />
+      <Select name="deal_type" defaultValue={opportunity.deal_type} required>
+        <SelectTrigger><SelectValue placeholder="Deal type" /></SelectTrigger>
+        <SelectContent>{dealTypes.map((deal) => <SelectItem key={deal.id} value={deal.name}>{deal.name}</SelectItem>)}</SelectContent>
+      </Select>
+      <Input name="customer_segment" defaultValue={opportunity.customer_segment} placeholder="Customer segment" />
+      <NativeSelect name="opportunity_status" defaultValue={opportunity.opportunity_status} options={OPPORTUNITY_STATUS_OPTIONS} required />
+      <Textarea className="xl:col-span-4" name="scope_summary" defaultValue={opportunity.scope_summary} placeholder="Scope summary" />
+      <Button className="xl:col-span-4" type="submit">Save Changes</Button>
+    </form>
+  );
+}
+
+function OpportunityTableRow({
+  opportunity,
+  dealTypes,
+}: {
+  opportunity: RecordMap;
+  dealTypes: { id: string; name: string }[];
+}) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <>
+      <TableRow>
+        <TableCell className="font-mono text-xs">
+          <Link
+            href={`?section=opportunity&opportunityId=${encodeURIComponent(opportunity.opportunity_id)}`}
+            className="text-[#6264a7] hover:underline"
+          >
+            {opportunity.opportunity_id}
+          </Link>
+        </TableCell>
+        <TableCell>{opportunity.customer_name}</TableCell>
+        <TableCell>{opportunity.deal_type}</TableCell>
+        <TableCell><OpportunityStatusBadge value={opportunity.opportunity_status} /></TableCell>
+        <TableCell>{opportunity.framework_version || "-"}</TableCell>
+        <TableCell>{opportunity.owner || "-"}</TableCell>
+        <TableCell>{opportunity.commercial_scenario || "-"}</TableCell>
+        <TableCell>
+          <Button size="sm" variant="outline" type="button" onClick={() => setEditing((value) => !value)}>
+            {editing ? <ChevronUp className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+            {editing ? "Close" : "Edit"}
+          </Button>
+        </TableCell>
+      </TableRow>
+      {editing && (
+        <TableRow>
+          <TableCell colSpan={8} className="bg-muted/30 p-4">
+            <OpportunityEditForm opportunity={opportunity} dealTypes={dealTypes} />
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+}
+
+function ScenarioTableRow({ scenario }: { scenario: RecordMap }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <>
+      <TableRow>
+        <TableCell className="font-mono text-xs">{scenario.opportunity_id}</TableCell>
+        <TableCell className="font-mono text-xs">{scenario.scenario_id}</TableCell>
+        <TableCell>{scenario.scenario_name}</TableCell>
+        <TableCell>{scenario.currency}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(scenario.total_cost)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(scenario.total_price)}</TableCell>
+        <TableCell className="text-right tabular-nums">{scenario.gross_margin || "-"}</TableCell>
+        <TableCell><OpportunityStatusBadge value={scenario.status} /></TableCell>
+        <TableCell>
+          <Button size="sm" variant="outline" type="button" onClick={() => setEditing((value) => !value)}>
+            {editing ? <ChevronUp className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+            {editing ? "Close" : "Edit"}
+          </Button>
+        </TableCell>
+      </TableRow>
+      {editing && (
+        <TableRow>
+          <TableCell colSpan={9} className="bg-muted/30 p-4">
+            <form action={updateProposalScenarioAction} className="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+              <input type="hidden" name="opportunity_id" value={scenario.opportunity_id} />
+              <input type="hidden" name="scenario_id" value={scenario.scenario_id} />
+              <Input name="scenario_name" defaultValue={scenario.scenario_name} placeholder="Scenario name" required />
+              <Input name="currency" defaultValue={scenario.currency} placeholder="Currency" />
+              <Textarea className="lg:col-span-3" name="description" defaultValue={scenario.description} placeholder="Scenario description" />
+              <Button className="lg:col-span-3" type="submit">Save Changes</Button>
+            </form>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+}
+
 function OpportunityFormCard({ title, children }: { title: string; children: ReactNode }) {
   return (
     <Card className="mb-4">
@@ -1148,6 +1485,76 @@ function OpportunityFormCard({ title, children }: { title: string; children: Rea
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Non-modal, always-in-flow replacement for OpportunityFormCard's Dialog, used only
+ * for Opportunity / Scenario / Cashflow Option create+edit flows. These forms have
+ * 10+ fields; a floating Dialog that a stray outside-click silently dismisses (losing
+ * everything typed, with no confirmation) is exactly the "unstable form" complaint -
+ * an expandable inline panel can't be dismissed by accident because there's no overlay
+ * to click outside of.
+ */
+/** Fluent 2 command bar - a row of text-only actions above a list, the way
+ * Dynamics 365 / Power Apps grids surface Refresh and Export. Scoped to
+ * Opportunity/Cashflow only. */
+function CommandBar({ exportHref }: { exportHref?: string }) {
+  const router = useRouter();
+  return (
+    <div className="mb-3 flex items-center gap-1 rounded-lg border p-1.5 shadow-[0_1px_3px_rgba(0,0,0,0.07)]">
+      <Button variant="ghost" size="sm" type="button" className="gap-1.5 text-[#6264a7] hover:text-[#6264a7]" onClick={() => router.refresh()}>
+        <RefreshCw className="h-3.5 w-3.5" /> Refresh
+      </Button>
+      {exportHref && (
+        <>
+          <div className="mx-1 h-5 w-px bg-border" />
+          <Button variant="ghost" size="sm" type="button" asChild className="gap-1.5">
+            <a href={exportHref} target="_blank" rel="noreferrer">
+              <Download className="h-3.5 w-3.5" /> Export to Excel
+            </a>
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function InlineFormPanel({
+  title,
+  description,
+  toggleLabel,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  description?: string;
+  toggleLabel: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Card className="mb-4 border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]" data-testid="inline-form-panel" data-panel-title={title}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="font-medium">{title}</div>
+            {description && <div className="text-sm text-muted-foreground">{description}</div>}
+          </div>
+          <Button
+            type="button"
+            variant={open ? "outline" : "default"}
+            className={open ? undefined : "bg-[#6264a7] hover:bg-[#54568e]"}
+            onClick={() => setOpen((value) => !value)}
+          >
+            {open ? <ChevronUp className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {open ? "Close" : toggleLabel}
+          </Button>
+        </div>
+        {open && <div className="mt-4 grid gap-3 border-t pt-4">{children}</div>}
       </CardContent>
     </Card>
   );
@@ -1199,11 +1606,12 @@ function CashflowPanel({ data }: { data: DashboardData }) {
   return (
     <section className="grid gap-5">
       <div className="grid grid-cols-3 gap-3 max-lg:grid-cols-1">
-        <MetricCard label="Approved Opportunities" value={String(approvedOpportunities.length)} />
-        <MetricCard label="Cashflow Options" value={String(analysis.cashflowOptions.length)} />
-        <MetricCard label="Approved Options" value={String(analysis.cashflowOptions.filter((option) => option.status === "approved").length)} />
+        <KpiTile label="Approved Opportunities" value={String(approvedOpportunities.length)} />
+        <KpiTile label="Cashflow Options" value={String(analysis.cashflowOptions.length)} />
+        <KpiTile label="Approved Options" value={String(analysis.cashflowOptions.filter((option) => option.status === "approved").length)} />
       </div>
-      <OpportunityFormCard title="Create Cashflow Option">
+      <CommandBar />
+      <InlineFormPanel title="Create Cashflow Option" toggleLabel="Create">
         <form action={createCashflowOptionAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
           <Select name="opportunity_id" required>
             <SelectTrigger><SelectValue placeholder="Approved Opportunity ID" /></SelectTrigger>
@@ -1235,52 +1643,151 @@ function CashflowPanel({ data }: { data: DashboardData }) {
           </Alert>
           <Button className="2xl:col-span-5" type="submit"><Plus className="h-4 w-4" /> Create Cashflow Option</Button>
         </form>
-      </OpportunityFormCard>
+      </InlineFormPanel>
       <DataTable
-        headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Approval", "Action"]}
+        headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Trend", "Approval", "Action"]}
         rows={analysis.cashflowOptions}
-        render={(option) => (
-          <TableRow key={`${option.opportunity_id}-${option.option_id}`}>
-            <TableCell className="font-mono text-xs">{option.opportunity_id}</TableCell>
-            <TableCell>{option.option_id} - {option.option_name}</TableCell>
-            <TableCell>{option.payment_terms || option.dso_days}</TableCell>
-            <TableCell>{money(option.gross_invoice)}</TableCell>
-            <TableCell>{money(option.incentive_discount)}</TableCell>
-            <TableCell>{money(option.cash_impact)}</TableCell>
-            <TableCell>{money(option.margin_impact)}</TableCell>
-            <TableCell>{money(option.npv)}</TableCell>
-            <TableCell>{option.break_even_date || "-"}</TableCell>
-            <TableCell>{option.working_capital_days || "-"}</TableCell>
-            <TableCell><StatusBadge value={option.status} /></TableCell>
-            <TableCell>
-              <form action={approveCashflowOptionAction} className="flex gap-2">
-                <input name="opportunity_id" type="hidden" value={option.opportunity_id} />
-                <input name="option_id" type="hidden" value={option.option_id} />
-                <input name="decision" type="hidden" value="approved" />
-                <Button size="sm" type="submit" disabled={option.status === "approved"}>Approve</Button>
-              </form>
-            </TableCell>
-          </TableRow>
-        )}
+        render={(option) => <CashflowOptionTableRow key={`${option.opportunity_id}-${option.option_id}`} option={option} />}
       />
     </section>
   );
 }
 
+function CashflowOptionComparison({ options }: { options: RecordMap[] }) {
+  const withNumbers = options.map((option) => ({
+    option,
+    cashGap: Number(option.cash_impact || 0),
+    npv: Number(option.npv || 0),
+  }));
+  const bestCashGapId = withNumbers.reduce((best, row) => (row.cashGap > best.cashGap ? row : best), withNumbers[0]).option.option_id;
+  const bestNpvId = withNumbers.reduce((best, row) => (row.npv > best.npv ? row : best), withNumbers[0]).option.option_id;
+
+  return (
+    <div className="mb-4 grid grid-cols-3 gap-3 max-lg:grid-cols-1">
+      {withNumbers.map(({ option, cashGap, npv }) => {
+        const isBestCashGap = option.option_id === bestCashGapId;
+        const isBestNpv = option.option_id === bestNpvId;
+        const isBest = isBestCashGap && isBestNpv;
+        return (
+          <Card key={option.option_id} className={cn("border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]", isBest && "ring-1 ring-[#6264a7]")}>
+            <CardContent className="grid gap-2 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-mono text-xs text-muted-foreground">{option.option_id}</div>
+                {isBest && <span className="rounded bg-[#e8ebfa] px-1.5 py-0.5 text-xs font-semibold text-[#4750b0]">Best overall</span>}
+              </div>
+              <div className="font-medium">{option.option_name}</div>
+              <div className="grid grid-cols-3 gap-2 text-sm">
+                <div>
+                  <div className="text-xs text-muted-foreground">Cash Gap</div>
+                  <div className={cn("font-semibold", isBestCashGap && "text-[#6264a7]")}>{money(String(cashGap))}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">NPV</div>
+                  <div className={cn("font-semibold", isBestNpv && "text-[#6264a7]")}>{money(String(npv))}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Break-even</div>
+                  <div className="font-semibold">{option.break_even_date || "-"}</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function CashflowOptionTableRow({ option, compact = true }: { option: RecordMap; compact?: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const isApproved = option.status === "approved";
+  return (
+    <>
+      <TableRow>
+        <TableCell className="font-mono text-xs">{option.opportunity_id}</TableCell>
+        <TableCell>{option.option_id} - {option.option_name}</TableCell>
+        <TableCell>{option.payment_terms || option.dso_days}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.gross_invoice)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.incentive_discount)}</TableCell>
+        <TableCell className={cn("text-right tabular-nums", Number(option.cash_impact) < 0 && "text-red-600")}>{money(option.cash_impact)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.margin_impact)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.npv)}</TableCell>
+        <TableCell>{option.break_even_date || "-"}</TableCell>
+        <TableCell className="text-right tabular-nums">{option.working_capital_days || "-"}</TableCell>
+        <TableCell className={compact ? "min-w-[140px]" : "min-w-[320px]"}>
+          {option.schedule && <CashflowChart schedule={option.schedule} compact={compact} />}
+        </TableCell>
+        <TableCell><OpportunityStatusBadge value={option.status} /></TableCell>
+        <TableCell>
+          <div className="flex flex-wrap gap-2">
+            <form action={approveCashflowOptionAction} className="flex gap-2">
+              <input name="opportunity_id" type="hidden" value={option.opportunity_id} />
+              <input name="option_id" type="hidden" value={option.option_id} />
+              <input name="decision" type="hidden" value="approved" />
+              <Button size="sm" type="submit" disabled={isApproved}>Approve</Button>
+            </form>
+            <Button
+              size="sm"
+              variant="outline"
+              type="button"
+              disabled={isApproved}
+              title={isApproved ? "Approved options are locked - create a new option instead" : undefined}
+              onClick={() => setEditing((value) => !value)}
+            >
+              {editing ? <ChevronUp className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+              {editing ? "Close" : "Edit"}
+            </Button>
+          </div>
+        </TableCell>
+      </TableRow>
+      {editing && !isApproved && (
+        <TableRow>
+          <TableCell colSpan={13} className="bg-muted/30 p-4">
+            <form action={updateCashflowOptionAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+              <input type="hidden" name="opportunity_id" value={option.opportunity_id} />
+              <input type="hidden" name="option_id" value={option.option_id} />
+              <Input name="option_name" defaultValue={option.option_name} placeholder="Option name" required />
+              <Input name="currency" defaultValue={option.currency} placeholder="Currency" />
+              <Input name="dso_days" defaultValue={option.dso_days} type="number" placeholder="DSO days" />
+              <Input name="invoice_date" defaultValue={option.invoice_date} type="date" placeholder="Invoice date" required />
+              <Input name="cost_date" defaultValue={option.cost_date} type="date" placeholder="Cost incurred date" />
+              <Input name="discount_rate_percent" defaultValue={option.discount_rate_percent} type="number" step="0.1" placeholder="NPV discount rate % annual" />
+              <MoneyInput name="gross_invoice" value={option.gross_invoice} placeholder="Gross invoice" />
+              <MoneyInput name="incentive_discount" value={option.incentive_discount} placeholder="Incentive / discount" />
+              <MoneyInput name="withholding_tax" value={option.withholding_tax} placeholder="Withholding tax" />
+              <MoneyInput name="cost_timing_amount" value={option.cost_amount} placeholder="Cost amount" />
+              <Button className="2xl:col-span-5" type="submit">Save Changes</Button>
+            </form>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+}
+
+const SPONSOR_EQUIVALENT_ROLES: RoleId[] = ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR"];
+
 function SdsPanel({ data }: { data: DashboardData }) {
   const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
   const opportunities = analysis.opportunities.map((opportunity) => ({ id: opportunity.opportunity_id, label: `${opportunity.opportunity_id} - ${opportunity.customer_name}` }));
+  const isSponsorViewer = SPONSOR_EQUIVALENT_ROLES.includes(data.user?.role_id as RoleId);
+  const pendingForSponsor = analysis.sdsRecords.filter((sds) => sds.decision === "pending");
 
   return (
     <section className="grid gap-5">
+      {isSponsorViewer && pendingForSponsor.length > 0 && (
+        <Alert>
+          <Send className="float-left me-2 h-4 w-4 text-amber-600" />
+          <AlertTitle>{pendingForSponsor.length} submission{pendingForSponsor.length === 1 ? "" : "s"} pending your approval</AlertTitle>
+          <AlertDescription>Review the summary on each card below, then Approve or Reject.</AlertDescription>
+        </Alert>
+      )}
       <OpportunityFormCard title="Create Sales Decision for Submission">
         <form action={createSdsAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
           <Select name="opportunity_id" required>
             <SelectTrigger><SelectValue placeholder="Opportunity" /></SelectTrigger>
             <SelectContent>{opportunities.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent>
           </Select>
-          <Input name="selected_scenario" placeholder="Selected scenario ID" required />
-          <Input name="selected_cashflow" placeholder="Approved cashflow option ID" required />
           <Select name="presenter_role" required>
             <SelectTrigger><SelectValue placeholder="Presenter role" /></SelectTrigger>
             <SelectContent>
@@ -1289,43 +1796,76 @@ function SdsPanel({ data }: { data: DashboardData }) {
             </SelectContent>
           </Select>
           <Input name="presenter_name" placeholder="Presenter name" />
-          <Textarea name="opportunity_outcome" placeholder="Opportunity Analysis outcome" />
-          <Textarea name="commodity_breakdown" placeholder="Commodity breakdown" />
-          <Textarea name="risk_summary" placeholder="Risk summary" />
-          <Textarea name="cashflow_outcome" placeholder="Cashflow analysis outcome" />
-          <Textarea name="pricing_structure_decision" placeholder="Pricing structure decision" />
-          <Textarea name="business_value_notes" placeholder="Business value notes" />
-          <Textarea name="company_value" placeholder="Company value notes" />
+          <Input name="upsell_opportunity" placeholder="Upsell opportunity (optional)" />
+          <Input name="growth_aspect" placeholder="Growth aspect (optional)" />
+          <Textarea name="business_value_notes" placeholder="Business value notes (why the customer should say yes)" />
+          <Textarea name="company_value" placeholder="Company value notes (why this deal is worth doing for us)" />
           <Textarea name="delivery_capability_notes" placeholder="Delivery capability notes" />
           <Alert className="xl:col-span-4">
-            <AlertTitle>PPT Explanation</AlertTitle>
-            <AlertDescription>Offline only. The system records metadata and decisions; it does not generate PPT automatically.</AlertDescription>
+            <AlertTitle>Everything else is pulled from the opportunity automatically</AlertTitle>
+            <AlertDescription>
+              Scope, selected scenario, commodity breakdown, risk summary, approved cashflow outcome, and pricing
+              decision are all read from the opportunity you select above at creation time — you don&apos;t retype
+              them. Offline PPT is still manual; this system records decisions, not slides.
+            </AlertDescription>
           </Alert>
           <Button className="xl:col-span-4" type="submit">Create SDS</Button>
         </form>
       </OpportunityFormCard>
-      <DataTable
-        headers={["SDS", "Opportunity", "Scenario", "Cashflow", "Business Value", "Delivery", "Decision", "Action"]}
-        rows={analysis.sdsRecords}
-        render={(sds) => (
-          <TableRow key={sds.sds_id}>
-            <TableCell className="font-mono text-xs">{sds.sds_id}</TableCell>
-            <TableCell>{sds.opportunity_id}</TableCell>
-            <TableCell>{sds.selected_scenario}</TableCell>
-            <TableCell>{sds.selected_cashflow}</TableCell>
-            <TableCell>{sds.business_value_notes}</TableCell>
-            <TableCell>{sds.delivery_capability_notes}</TableCell>
-            <TableCell><StatusBadge value={sds.decision} /></TableCell>
-            <TableCell>
-              <div className="flex gap-2">
-                <SdsDecisionButton sdsId={sds.sds_id} decision="approved" label="Approve" />
-                <SdsDecisionButton sdsId={sds.sds_id} decision="rejected" label="Reject" />
-              </div>
-            </TableCell>
-          </TableRow>
+      <div className="grid gap-4">
+        {analysis.sdsRecords.map((sds) => (
+          <SdsDetailCard key={sds.sds_id} sds={sds} canDecide={isSponsorViewer} />
+        ))}
+        {analysis.sdsRecords.length === 0 && (
+          <Card><CardContent className="p-6 text-sm text-muted-foreground">No Sales Decision Submissions yet.</CardContent></Card>
         )}
-      />
+      </div>
     </section>
+  );
+}
+
+function SdsDetailCard({ sds, canDecide }: { sds: RecordMap; canDecide: boolean }) {
+  const fields: Array<[string, string]> = [
+    ["Opportunity outcome", sds.opportunity_outcome],
+    ["Commodity breakdown", sds.commodity_breakdown],
+    ["Risk summary", sds.risk_summary],
+    ["Cashflow outcome", sds.cashflow_outcome],
+    ["Pricing structure decision", sds.pricing_structure_decision],
+    ["Business value", sds.business_value_notes],
+    ["Delivery capability", sds.delivery_capability_notes],
+  ];
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div>
+          <CardTitle className="font-mono text-sm">{sds.sds_id}</CardTitle>
+          <CardDescription>
+            {sds.opportunity_id} · Scenario {sds.selected_scenario || "-"} · Cashflow {sds.selected_cashflow || "-"}
+            {sds.presenter_name ? ` · Presented by ${sds.presenter_name} (${sds.presenter_role || "presenter"})` : ""}
+          </CardDescription>
+        </div>
+        <StatusBadge value={sds.decision} />
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {fields.map(([label, value]) => (
+          <div key={label}>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+            <div className="text-sm">{value || "-"}</div>
+          </div>
+        ))}
+        {sds.decision !== "pending" && (
+          <div className="text-xs text-muted-foreground">
+            Decided by {sds.approver || "-"} at {sds.timestamp || "-"}{sds.comments ? ` — ${sds.comments}` : ""}
+          </div>
+        )}
+        {sds.decision === "pending" && canDecide && (
+          <div className="flex gap-2 pt-2">
+            <SdsDecisionButton sdsId={sds.sds_id} decision="approved" label="Approve" />
+            <SdsDecisionButton sdsId={sds.sds_id} decision="rejected" label="Reject" />
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1475,23 +2015,23 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
                 <SelectTrigger><SelectValue placeholder="Approved SDOA" /></SelectTrigger>
                 <SelectContent>{approvedSdoa.map((sdoa) => <SelectItem key={sdoa.sdoa_id} value={sdoa.sdoa_id}>{sdoa.opportunity_id} / {sdoa.received_po_number || sdoa.sdoa_id}</SelectItem>)}</SelectContent>
               </Select>
-              <Input name="linked_opportunity_id" placeholder="Linked opportunity ID" required />
-              <Input name="linked_sds_id" placeholder="Linked SDS ID" required />
-              <Input name="customer" placeholder="Customer" required />
-              <Input name="sponsor" placeholder="Sponsor" required />
-              <Input name="project_leader" placeholder="Project Manager / Program Director" required />
-              <Input name="project_finance_manager" placeholder="Project Finance Management" />
-              <Input name="resource_manager" placeholder="Resource Manager" />
-              <Input name="contract_legal_owner" placeholder="Contract / Legal owner" />
-              <Input name="commercial_owner" placeholder="Commercial owner" />
+              <NativeSelect name="sponsor" options={peopleForRoles(data.team_directory, ["ROLE_SPONSOR"])} emptyLabel="Sponsor" required />
+              <NativeSelect name="project_leader" options={peopleForRoles(data.team_directory, ["ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR"])} emptyLabel="Project Manager / Program Director" required />
+              <NativeSelect name="project_finance_manager" options={peopleForRoles(data.team_directory, ["ROLE_PROJECT_FINANCE_MANAGER"])} emptyLabel="Project Finance Management" />
+              <NativeSelect name="resource_manager" options={peopleForRoles(data.team_directory, ["ROLE_RESOURCE_MANAGER"])} emptyLabel="Resource Manager" />
+              <NativeSelect name="contract_legal_owner" options={peopleForRoles(data.team_directory, ["ROLE_CONTRACT_LEGAL"])} emptyLabel="Contract / Legal owner" />
+              <NativeSelect name="commercial_owner" options={peopleForRoles(data.team_directory, ["ROLE_COMMERCIAL_MANAGER"])} emptyLabel="Commercial owner" />
               <NativeSelect name="currency" options={currencyOptions(data.projects)} emptyLabel="Project currency" />
               <Input name="currency_manual" placeholder="Add new currency manually, e.g. JPY" maxLength={3} />
-              <Input name="framework_version" placeholder="Framework version optional" />
               <Textarea name="milestone_plan" placeholder="Milestone plan" />
               <Textarea name="site_cluster_configuration" placeholder="Site / cluster configuration" />
               <Textarea name="delivery_baseline" placeholder="Delivery baseline" />
               <Textarea name="financial_baseline" placeholder="Financial baseline" />
               <Input name="governance_cadence" placeholder="Governance cadence" />
+              <Alert className="xl:col-span-4">
+                <AlertTitle>Opportunity, customer, SDS, and framework version are automatic</AlertTitle>
+                <AlertDescription>Picking the SDOA above determines its linked opportunity, customer name, and approved SDS - and the project always uses the latest active framework version. None of that is re-entered here.</AlertDescription>
+              </Alert>
               <Button className="xl:col-span-4" type="submit">Create Execution Project</Button>
             </form>
           </OpportunityFormCard>
@@ -2740,7 +3280,11 @@ function EmployeeCommercialDialog({ employee }: { employee: RecordMap }) {
 }
 
 function MoneyInput({ name, value, placeholder }: { name: string; value?: string; placeholder: string }) {
-  return <Input name={name} defaultValue={value || "0"} type="number" min="0" step="0.01" placeholder={placeholder} />;
+  // Leaving defaultValue undefined (not "0") when no value is passed shows the
+  // placeholder instead of a fake pre-filled 0 that hides the field's own hint text.
+  // Server actions already treat a blank submission as 0 (see moneyOrZero in actions.ts),
+  // so this is display-only and doesn't change what gets saved.
+  return <Input name={name} defaultValue={value} type="number" min="0" step="0.01" placeholder={placeholder} />;
 }
 
 function DocumentsPanel({
@@ -2844,6 +3388,10 @@ function DocumentsPanel({
     </section>
   );
 }
+
+// Matches every status value actions.ts's cashflow gate (getApprovedOpportunityForCashflow)
+// and framework-defaults.ts's Opportunity Analysis workflowStatuses actually check for.
+const OPPORTUNITY_STATUS_OPTIONS = ["draft", "submitted", "pricing_approved", "ready_for_cashflow", "approved"];
 
 const TEMPLATE_CATEGORIES = [
   "Statement of Work",
@@ -3447,17 +3995,25 @@ function DataTable({
   headers,
   rows,
   render,
+  compact,
 }: {
   headers: string[];
   rows: RecordMap[];
   render: (row: RecordMap, index: number) => ReactNode;
+  /** Fluent 2 list treatment: sticky off-white header, tighter rows, a soft shadow
+   * card instead of a hard border. Opt-in per table (only Opportunity Analysis /
+   * Cashflow Analysis use it today) so every other section's tables keep their
+   * current look. */
+  compact?: boolean;
 }) {
   return (
-    <div className="rounded-lg border">
+    <div className={compact ? "overflow-hidden rounded-lg border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]" : "rounded-lg border"}>
       <Table>
-        <TableHeader>
+        <TableHeader className={compact ? "sticky top-0 z-10 bg-[#fafafa]" : undefined}>
           <TableRow>
-            {headers.map((header) => <TableHead key={header}>{header}</TableHead>)}
+            {headers.map((header) => (
+              <TableHead key={header} className={compact ? "h-8 py-1 font-normal normal-case tracking-normal" : undefined}>{header}</TableHead>
+            ))}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -3471,6 +4027,38 @@ function DataTable({
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+/** Fluent 2 criticality mapping for Opportunity/Cashflow statuses specifically
+ * (draft/approved/submitted/rejected/selected/...) - scoped to these two sections via
+ * a dedicated component rather than changing the shared StatusBadge used everywhere
+ * else in the app. Small-radius chip + dot, not a pill, per the approved design. */
+function OpportunityStatusBadge({ value }: { value: string }) {
+  const normalized = String(value || "").toLowerCase();
+  const tone = /reject|cancel|expired|closed_lost|error/.test(normalized)
+    ? "bg-red-50 text-red-700"
+    : /approve|selected|closed_won|ready/.test(normalized)
+      ? "bg-[#dff6dd] text-[#0f5c0f]"
+      : /pending|submit|review|hold/.test(normalized)
+        ? "bg-[#e8ebfa] text-[#4750b0]"
+        : "bg-[#f0f0f0] text-[#494847]";
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-semibold", tone)}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {value || "-"}
+    </span>
+  );
+}
+
+function KpiTile({ label, value }: { label: string; value: string }) {
+  return (
+    <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]">
+      <CardContent className="p-4">
+        <div className="text-xs text-muted-foreground">{label}</div>
+        <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3708,6 +4296,10 @@ function money(value?: string, currency?: string) {
 
 function uniqueCurrencies(values: Array<string | undefined>) {
   return Array.from(new Set(values.map((value) => (value || "").toUpperCase()).filter(Boolean)));
+}
+
+function peopleForRoles(directory: DashboardData["team_directory"], roleCodes: string[]) {
+  return directory.filter((person) => roleCodes.includes(person.meta || ""));
 }
 
 function currencyOptions(projects: DashboardData["projects"] = []) {

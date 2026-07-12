@@ -86,7 +86,7 @@ async function main() {
     const localPart = email.split("@")[0];
     await prisma.user.upsert({
       where: { organizationId_email: { organizationId: orgId, email } },
-      update: { roleId: superRole.id, status: "ACTIVE" },
+      update: { roleId: superRole.id, status: "ACTIVE", passwordHash },
       create: {
         organizationId: orgId,
         email,

@@ -22,16 +22,20 @@ Run from this directory (`web/`).
 
 ```powershell
 npm run dev                 # next dev
-npm run build                # prisma generate + next build
+npm run build                # prisma generate + prisma migrate deploy + next build
 npm run lint                 # eslint
 npx tsc --noEmit             # typecheck
+npm run test                 # vitest run (unit + isolation tests)
 npm run db:validate          # prisma validate
 npm run db:generate          # prisma generate
 npm run db:migrate           # prisma migrate dev
+npm run db:migrate:deploy    # prisma migrate deploy (applies pending migrations, no schema edits)
 npm run db:push              # prisma db push
-npm run db:seed              # tsx prisma/seed.ts
+npm run db:seed              # tsx prisma/seed.ts (requires SEVENFOLD_SUPER_ADMIN_PASSWORD + SEVENFOLD_SUPER_ADMIN_EMAILS, no hardcoded fallback)
 npm run hash-password -- "YourStrongPassword"   # generate a password_hash for a user row
 ```
+
+`db:seed` intentionally refreshes the configured Super Admin password hashes for both new and existing users. This keeps production password recovery idempotent; never remove `passwordHash` from the Super Admin upsert's `update` branch.
 
 Full local validation pass before considering a change done (matches `TEST_REPORT.md`):
 
@@ -40,9 +44,10 @@ npx tsc --noEmit
 npm run db:validate
 npm run lint
 npm run build
+npm run test
 ```
 
-There is no JS unit test runner configured (no Jest/Vitest) in this repo yet.
+**`build` always runs `prisma migrate deploy` before `next build`.** This is load-bearing, not optional — `prisma generate` only regenerates the *client's expected shape* from `schema.prisma`, it does **not** touch the database. Without `migrate deploy` in the pipeline, a deploy can ship code that expects a column/table the target database doesn't have yet (this took production down once — see the Neon database gotcha below). Do not remove this step from `build` to "speed up" builds.
 
 GAS/root-repo commands proxied from here:
 
@@ -102,4 +107,16 @@ This `web/` directory has its own nested `.git`, separate from the repository ro
 
 ## Environment variables
 
-Full tables are in `../docs/environment-variables.md`. Essentials for `web/.env.local`: `NEXUS_GAS_WEB_APP_URL`, `NEXUS_GAS_API_SECRET` (must match the value set in Apps Script Script Properties), `NEXUS_SESSION_SECRET`, `DATABASE_URL`, optionally `BCRYPT_SALT_ROUNDS`. Never commit `.env.local`, service account keys, or other secrets.
+Full tables are in `../docs/environment-variables.md`. Essentials for `web/.env.local`: `NEXUS_GAS_WEB_APP_URL`, `NEXUS_GAS_API_SECRET` (must match the value set in Apps Script Script Properties), `NEXUS_SESSION_SECRET`, `DATABASE_URL`, `DIRECT_URL` (same value as `DATABASE_URL` unless a separate pooler endpoint exists — `schema.prisma` requires both), optionally `BCRYPT_SALT_ROUNDS`. Never commit `.env.local`, service account keys, or other secrets.
+
+### ⚠️ There are two different Neon databases that look similar — do not assume they're the same
+
+This caused a full production outage (login broken with `The column User.organizationId does not exist`) after a schema migration, so read this before ever touching `DATABASE_URL`/`DIRECT_URL` locally or on Vercel:
+
+- **`ep-wispy-heart-aoq220my...`** — a *shared* Neon project ("nexus platform"), used only for **local dev** (`web/.env.local`). Sevenfold data lives there under a custom Postgres schema, `nexus_sevenfold` (set via `?schema=nexus_sevenfold` in the connection string), to avoid colliding with unrelated data in that project's `public` schema.
+- **`ep-holy-fire-aosgfvue...`** — the **actual production** Neon project, dedicated to Sevenfold. It uses the plain **`public`** schema (no `?schema=` param) — do **not** add `schema=nexus_sevenfold` to its connection string, that points at an empty schema on the wrong logical location and silently "succeeds" (migrations apply cleanly, then runtime queries 500 with "column does not exist" because the app is reading from a different empty schema than the one migrations just touched).
+
+Consequences:
+- Local dev and production are **not the same database**. A migration applied locally (`npm run db:migrate` against `.env.local`) does **not** touch production. Production only gets migrated by its own `npm run build` pipeline running against whatever `DATABASE_URL`/`DIRECT_URL` Vercel has configured — see the `build` script note above.
+- Before assuming "local and prod are the same DB" (e.g. to skip a migration step, or to reason about data), verify the **hostname**, not just the schema name — two totally different Neon projects can both be configured with a schema literally named `nexus_sevenfold`.
+- If you ever need to check what production is actually connected to, do not hardcode credentials into a script or add an unauthenticated diagnostic API route (both will get blocked, correctly — the repo is public). Ask the user to check Vercel's dashboard directly, or add a *properly authenticated* (real session/role check) diagnostic if one is truly needed.

@@ -13,7 +13,7 @@ import type { FrameworkControlPlane } from "@/lib/types";
 import { getDeliveryGovernanceRegistryForMutation, saveDeliveryGovernanceRegistry } from "@/services/deliveryGovernanceService";
 import { writeAudit } from "@/services/auditService";
 import { FRAMEWORK_SETTINGS_CACHE_TAG, getLatestActiveFrameworkVersion } from "@/services/frameworkSettingsService";
-import { createDefaultGates, getProjectExecutionRegistryForMutation, saveProjectExecutionRegistry, sdoaIsApproved } from "@/services/projectExecutionService";
+import { createDefaultGates, getProjectExecutionRegistryForMutation, saveProjectExecutionRegistry } from "@/services/projectExecutionService";
 import { calculateRatecardRecord, fallbackFxRates, fxCacheIsFresh, getRatecardRegistryForMutation, saveRatecardRegistry } from "@/services/ratecardService";
 import { getTalentPlanningRegistryForMutation, saveTalentPlanningRegistry } from "@/services/talentPlanningService";
 import { getActiveTemplateSnapshot, transitionTemplate, uploadTemplate } from "@/services/templateManagementService";
@@ -758,6 +758,30 @@ export async function createOpportunityAction(formData: FormData) {
   revalidatePath("/");
 }
 
+export async function updateOpportunityAction(formData: FormData) {
+  const { user: actor } = await currentActor();
+  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
+  const organizationId = requireOrganizationId(actor);
+  const opportunityCode = getValue(formData, "opportunity_id");
+  const existing = await getDb().opportunity.findUnique({ where: { organizationId_opportunityCode: { organizationId, opportunityCode } } });
+  if (!existing) throw new Error("Opportunity not found");
+  const updated = await getDb().opportunity.update({
+    where: { id: existing.id },
+    data: {
+      customerName: getValue(formData, "customer_name"),
+      customerSegment: getValue(formData, "customer_segment") || null,
+      accountManager: getValue(formData, "owner") || existing.accountManager,
+      solutionArchitect: getValue(formData, "solution_architect") || null,
+      dealType: getValue(formData, "deal_type"),
+      scopeSummary: getValue(formData, "scope_summary") || null,
+      status: getValue(formData, "opportunity_status") || existing.status,
+      updatedBy: actor?.email || null,
+    },
+  });
+  await writeAudit({ actorId: actor?.id, action: "UPDATE_OPPORTUNITY", entityType: "opportunity", entityId: updated.opportunityCode, before: existing, after: updated });
+  revalidatePath("/");
+}
+
 export async function cloneOpportunityAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
@@ -868,6 +892,29 @@ export async function createProposalScenarioAction(formData: FormData) {
     },
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_PROPOSAL_SCENARIO", entityType: "proposal_scenario", entityId: scenario.scenarioCode, after: { opportunity: opportunity.opportunityCode } });
+  revalidatePath("/");
+}
+
+export async function updateProposalScenarioAction(formData: FormData) {
+  const { user: actor } = await currentActor();
+  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SOLUTION_ARCHITECT", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER"]);
+  const organizationId = requireOrganizationId(actor);
+  const scenario = await getDb().proposalScenario.findFirst({
+    where: { scenarioCode: getValue(formData, "scenario_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
+  });
+  if (!scenario) throw new Error("Scenario not found");
+  // Status intentionally not editable here - "selected" is only ever set via
+  // createPricingDecisionAction's commercial-scenario flow; letting a plain edit
+  // override that would silently break pricing decisions tied to the scenario.
+  const updated = await getDb().proposalScenario.update({
+    where: { id: scenario.id },
+    data: {
+      name: getValue(formData, "scenario_name"),
+      description: getValue(formData, "description") || null,
+      currency: getValue(formData, "currency") || scenario.currency,
+    },
+  });
+  await writeAudit({ actorId: actor?.id, action: "UPDATE_PROPOSAL_SCENARIO", entityType: "proposal_scenario", entityId: updated.scenarioCode, before: scenario, after: updated });
   revalidatePath("/");
 }
 
@@ -1021,6 +1068,65 @@ export async function createCashflowOptionAction(formData: FormData) {
   revalidatePath("/");
 }
 
+export async function updateCashflowOptionAction(formData: FormData) {
+  const { user: actor } = await currentActor();
+  requireCommercialManager(actor);
+  const organizationId = requireOrganizationId(actor);
+  const option = await getDb().cashflowOption.findFirst({
+    where: { optionCode: getValue(formData, "option_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
+  });
+  if (!option) throw new Error("Cashflow option not found");
+  if (option.status === "approved") {
+    throw new Error("This cashflow option is already approved. Create a new option instead of editing an approved one.");
+  }
+  const grossInvoice = moneyOrZero(getValue(formData, "gross_invoice"));
+  const discountAmount = moneyOrZero(getValue(formData, "incentive_discount"));
+  const withholdingTax = moneyOrZero(getValue(formData, "withholding_tax"));
+  const costAmount = moneyOrZero(getValue(formData, "cost_timing_amount"));
+  const dsoDays = Number(getValue(formData, "dso_days") || option.dsoDays);
+  const invoiceDate = dateOrNull(getValue(formData, "invoice_date")) || new Date();
+  const costDate = dateOrNull(getValue(formData, "cost_date")) || undefined;
+  const discountRatePercent = getValue(formData, "discount_rate_percent") ? moneyOrZero(getValue(formData, "discount_rate_percent")) : undefined;
+  const calculation = calculateCashflow({
+    invoiceDate,
+    dsoDays,
+    grossInvoice,
+    discountAmount,
+    withholdingTax,
+    costAmount,
+    costDate,
+    discountRatePercent,
+  });
+  const updated = await getDb().cashflowOption.update({
+    where: { id: option.id },
+    data: {
+      name: getValue(formData, "option_name") || option.name,
+      currency: getValue(formData, "currency") || option.currency,
+      dsoDays,
+      grossInvoice,
+      discountAmount,
+      withholdingTax,
+      cashGap: calculation.cashGap,
+      marginAmount: calculation.marginAmount,
+      npv: calculation.npv,
+      calculation: calculation as unknown as Prisma.InputJsonValue,
+    },
+  });
+  await getDb().systemSetting.upsert({
+    where: { organizationId_key: { organizationId, key: `sevenfold.cashflow_option_detail.${option.id}` } },
+    create: {
+      organizationId,
+      key: `sevenfold.cashflow_option_detail.${option.id}`,
+      value: cashflowDetailFromForm(formData, option.id),
+      description: "Cashflow milestone, invoice schedule, timing, and formula metadata.",
+      status: "active",
+    },
+    update: { value: cashflowDetailFromForm(formData, option.id), status: "active" },
+  });
+  await writeAudit({ actorId: actor?.id, action: "UPDATE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: updated.optionCode, before: option, after: { cashGap: calculation.cashGap, marginAmount: calculation.marginAmount, npv: calculation.npv } });
+  revalidatePath("/");
+}
+
 export async function approveCashflowOptionAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER"]);
@@ -1044,7 +1150,12 @@ export async function createSdsAction(formData: FormData) {
   const organizationId = requireOrganizationId(actor);
   const opportunity = await getDb().opportunity.findUnique({
     where: { organizationId_opportunityCode: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
-    include: { cashflowOptions: true, pricingDecisions: true },
+    include: {
+      cashflowOptions: true,
+      pricingDecisions: true,
+      scenarios: { include: { commodityLines: true } },
+      risks: true,
+    },
   });
   if (!opportunity) throw new Error("Opportunity not found");
   if (!opportunity.cashflowOptions.some((option) => option.status === "approved")) throw new Error("Approved cashflow option is required before SDS.");
@@ -1053,6 +1164,10 @@ export async function createSdsAction(formData: FormData) {
   if (["high", "very high"].includes(dealType) && presenterRole !== "Program Director") {
     throw new Error("High/Very High deals require Program Director as presenter.");
   }
+  // Everything derivable from the opportunity/scenario/risk/cashflow/pricing records is
+  // computed here, not typed by hand — see business_plan.md's complaint that SDS forced
+  // re-entering information that already existed on the opportunity.
+  const derived = deriveSdsSummary(opportunity);
   const sds = await getDb().salesDecisionSubmission.create({
     data: {
       opportunityId: opportunity.id,
@@ -1060,20 +1175,80 @@ export async function createSdsAction(formData: FormData) {
       companyValue: getValue(formData, "company_value") || null,
       upsellOpportunity: getValue(formData, "upsell_opportunity") || null,
       growthAspect: getValue(formData, "growth_aspect") || null,
-      selectedScenario: getValue(formData, "selected_scenario"),
-      selectedCashflow: getValue(formData, "selected_cashflow"),
+      selectedScenario: derived.selectedScenarioCode,
+      selectedCashflow: derived.selectedCashflowCode,
       deliveryCapability: getValue(formData, "delivery_capability_notes") || null,
       decision: "pending",
       comment: getValue(formData, "comments") || null,
     },
   });
+  const summaryValue = {
+    sdsId: sds.id,
+    ...derived,
+    presenterRole,
+    presenterName: getValue(formData, "presenter_name"),
+    pptExplanation: "Offline only. PPT is not generated automatically.",
+    updatedAt: new Date().toISOString(),
+  };
   await getDb().systemSetting.upsert({
     where: { organizationId_key: { organizationId, key: `sevenfold.sds_summary.${sds.id}` } },
-    create: { organizationId, key: `sevenfold.sds_summary.${sds.id}`, value: sdsSummaryFromForm(formData, sds.id), description: "SDS summary and presenter metadata.", status: "active" },
-    update: { value: sdsSummaryFromForm(formData, sds.id), status: "active" },
+    create: { organizationId, key: `sevenfold.sds_summary.${sds.id}`, value: summaryValue, description: "SDS summary and presenter metadata.", status: "active" },
+    update: { value: summaryValue, status: "active" },
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_SDS", entityType: "sds", entityId: sds.id, after: { opportunity: opportunity.opportunityCode, presenterRole } });
   revalidatePath("/");
+}
+
+type OpportunityForSdsDerivation = Prisma.OpportunityGetPayload<{
+  include: { cashflowOptions: true; pricingDecisions: true; scenarios: { include: { commodityLines: true } }; risks: true };
+}>;
+
+function deriveSdsSummary(opportunity: OpportunityForSdsDerivation) {
+  const selectedScenario = opportunity.scenarios.find((scenario) => scenario.status === "selected") || opportunity.scenarios[0];
+  const approvedCashflow = [...opportunity.cashflowOptions]
+    .filter((option) => option.status === "approved")
+    .sort((a, b) => (b.approvedAt?.getTime() || 0) - (a.approvedAt?.getTime() || 0))[0];
+  const approvedPricing = [...opportunity.pricingDecisions]
+    .filter((decision) => decision.status === "approved")
+    .sort((a, b) => (b.approvedAt?.getTime() || 0) - (a.approvedAt?.getTime() || 0))[0];
+
+  const opportunityOutcome = `Customer: ${opportunity.customerName}${opportunity.customerSegment ? ` (${opportunity.customerSegment})` : ""}. `
+    + `Deal type: ${opportunity.dealType || "unspecified"}. Opportunity status: ${opportunity.status}. `
+    + `Scope: ${opportunity.scopeSummary || "not recorded"}.`;
+
+  const commodityBreakdown = selectedScenario
+    ? (selectedScenario.commodityLines.length
+        ? `Scenario ${selectedScenario.scenarioCode}: ${selectedScenario.commodityLines
+            .map((line) => `${line.commodityCode} x${line.quantity} (cost ${line.unitCost}, price ${line.unitPrice})`)
+            .join("; ")}. Total cost ${selectedScenario.totalCost}, total price ${selectedScenario.totalPrice}, gross margin ${selectedScenario.grossMargin ?? "n/a"}.`
+        : `Scenario ${selectedScenario.scenarioCode} has no commodity lines recorded.`)
+    : "No proposal scenario selected on this opportunity.";
+
+  const sortedRisks = [...opportunity.risks].sort((a, b) => Number(b.riskCostAfterMitigation) - Number(a.riskCostAfterMitigation));
+  const riskSummary = sortedRisks.length
+    ? `${sortedRisks.length} risk(s) registered. Top exposure: "${sortedRisks[0].description}" (${sortedRisks[0].domain}, residual exposure ${sortedRisks[0].riskCostAfterMitigation} after mitigation).`
+    : "No risks registered on this opportunity.";
+
+  const cashflowCalc = approvedCashflow?.calculation as { discountRatePercent?: number; breakEvenDate?: string | null; workingCapitalDays?: number } | null;
+  const cashflowOutcome = approvedCashflow
+    ? `Option ${approvedCashflow.optionCode} approved: cash gap ${approvedCashflow.cashGap}, margin ${approvedCashflow.marginAmount}, NPV ${approvedCashflow.npv ?? "n/a"}`
+      + (cashflowCalc?.discountRatePercent !== undefined ? ` at ${cashflowCalc.discountRatePercent}% discount rate` : "")
+      + `, break-even ${cashflowCalc?.breakEvenDate || "not reached"}, working capital ${cashflowCalc?.workingCapitalDays ?? "n/a"} days.`
+    : "No approved cashflow option.";
+
+  const pricingStructureDecision = approvedPricing
+    ? `${approvedPricing.decision}${approvedPricing.comment ? ` — ${approvedPricing.comment}` : ""}`
+    : "No approved pricing decision.";
+
+  return {
+    opportunityOutcome,
+    commodityBreakdown,
+    riskSummary,
+    cashflowOutcome,
+    pricingStructureDecision,
+    selectedScenarioCode: selectedScenario?.scenarioCode || "",
+    selectedCashflowCode: approvedCashflow?.optionCode || "",
+  };
 }
 
 export async function decideSdsAction(formData: FormData) {
@@ -1154,24 +1329,33 @@ export async function createExecutionProjectFromSdoaAction(formData: FormData) {
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
   const sdoaId = getValue(formData, "linked_sdoa_id");
-  if (!await sdoaIsApproved(organizationId, sdoaId)) {
+  // Opportunity, customer, and the approved SDS are all determined by the SDOA the user
+  // picked - derived here instead of asking the user to retype IDs the system already knows.
+  const sdoaRecord = await getDb().orderAcknowledgement.findFirst({
+    where: { id: sdoaId, opportunity: { organizationId } },
+    include: { opportunity: { include: { sdsApprovals: true } } },
+  });
+  if (!sdoaRecord || !["acknowledged", "approved", "accepted"].includes(sdoaRecord.outcome)) {
     throw new Error("Project can only be created from an approved or acknowledged SDOA.");
   }
+  const approvedSds = [...sdoaRecord.opportunity.sdsApprovals]
+    .filter((sds) => sds.decision === "approved")
+    .sort((a, b) => (b.decidedAt?.getTime() || 0) - (a.decidedAt?.getTime() || 0))[0];
   const registry = await getProjectExecutionRegistryForMutation(organizationId);
   const projectId = getValue(formData, "project_id") || generatedLegacyId("PRJ");
   if (registry.projects.some((project) => project.projectId === projectId)) {
     throw new Error("Project ID already exists.");
   }
-  const frameworkVersion = getValue(formData, "framework_version") || await getLatestActiveFrameworkVersion(organizationId);
+  const frameworkVersion = await getLatestActiveFrameworkVersion(organizationId);
   const currency = normalizeCurrency(getValue(formData, "currency_manual") || getValue(formData, "currency") || "USD");
   const templateSnapshot = await getActiveTemplateSnapshot(organizationId);
   const now = new Date().toISOString();
   const project = {
     projectId,
-    linkedOpportunityId: getValue(formData, "linked_opportunity_id"),
-    linkedSdsId: getValue(formData, "linked_sds_id"),
+    linkedOpportunityId: sdoaRecord.opportunity.opportunityCode,
+    linkedSdsId: approvedSds?.id || "",
     linkedSdoaId: sdoaId,
-    customer: getValue(formData, "customer"),
+    customer: sdoaRecord.opportunity.customerName,
     sponsor: getValue(formData, "sponsor"),
     projectLeader: getValue(formData, "project_leader"),
     projectFinanceManager: getValue(formData, "project_finance_manager"),
@@ -1421,21 +1605,6 @@ function cashflowDetailFromForm(formData: FormData, optionId: string) {
     revenueTimingAmount: getValue(formData, "revenue_timing_amount"),
     costTiming: getValue(formData, "cost_timing"),
     costTimingAmount: getValue(formData, "cost_timing_amount"),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-function sdsSummaryFromForm(formData: FormData, sdsId: string) {
-  return {
-    sdsId,
-    opportunityOutcome: getValue(formData, "opportunity_outcome"),
-    commodityBreakdown: getValue(formData, "commodity_breakdown"),
-    riskSummary: getValue(formData, "risk_summary"),
-    cashflowOutcome: getValue(formData, "cashflow_outcome"),
-    pricingStructureDecision: getValue(formData, "pricing_structure_decision"),
-    presenterRole: getValue(formData, "presenter_role"),
-    presenterName: getValue(formData, "presenter_name"),
-    pptExplanation: "Offline only. PPT is not generated automatically.",
     updatedAt: new Date().toISOString(),
   };
 }

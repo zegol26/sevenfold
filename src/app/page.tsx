@@ -1,5 +1,7 @@
+import { Briefcase, DollarSign, ListChecks, ShieldCheck, Users } from "lucide-react";
 import { DashboardClient } from "@/components/dashboard-client";
 import { isSuperAdmin } from "@/lib/authz";
+import { CHANGELOG } from "@/lib/changelog";
 import { getDb } from "@/lib/db";
 import { defaultFrameworkControlPlane } from "@/lib/framework-defaults";
 import { getSession } from "@/lib/session";
@@ -11,6 +13,7 @@ import { calculateNetSales, getProjectExecutionRegistry } from "@/services/proje
 import { getRatecardRegistry } from "@/services/ratecardService";
 import { getTalentPlanningRegistry } from "@/services/talentPlanningService";
 import { getTemplateRegistry } from "@/services/templateManagementService";
+import packageJson from "../../package.json";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +32,7 @@ type DashboardUserRow = {
 export default async function Home({
   searchParams,
 }: {
-  searchParams?: Promise<{ section?: string; login_error?: string }>;
+  searchParams?: Promise<{ section?: string; opportunityId?: string; login_error?: string }>;
 }) {
   const params = searchParams ? await searchParams : {};
   const data = await getDashboardData();
@@ -44,7 +47,18 @@ export default async function Home({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <DashboardClient data={data} initialSection={params.section} isSuperAdmin={isSuperAdmin(data.user)} />
+      <DashboardClient
+        // Forces a clean remount whenever the URL's section/opportunityId changes (e.g.
+        // clicking an Opportunity row's Link), so DashboardClient's internal useState
+        // re-initializes from the new searchParams instead of keeping stale state.
+        key={`${params.section || "home"}:${params.opportunityId || ""}`}
+        data={data}
+        initialSection={params.section}
+        initialOpportunityId={params.opportunityId}
+        isSuperAdmin={isSuperAdmin(data.user)}
+        appVersion={packageJson.version}
+        changelog={CHANGELOG}
+      />
     </div>
   );
 }
@@ -104,6 +118,7 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     projectApplications,
     opportunities,
     opportunityFrameworkVersionSettings,
+    sdsSummarySettings,
     projectExecutionRegistry,
     deliveryGovernanceRegistry,
     talentPlanningRegistry,
@@ -131,6 +146,7 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     db.projectApplication.findMany({ where: { resource: { organizationId } }, include: { resource: true, project: { include: { client: true } } }, orderBy: { createdAt: "desc" } }),
     getOpportunityDashboardRows(organizationId),
     safeFindSystemSettingsByPrefix(organizationId, "sevenfold.entity_framework_version.opportunity."),
+    safeFindSystemSettingsByPrefix(organizationId, "sevenfold.sds_summary."),
     getProjectExecutionRegistry(organizationId),
     getDeliveryGovernanceRegistry(organizationId),
     getTalentPlanningRegistry(organizationId),
@@ -231,7 +247,7 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     meta: project.client.legacySourceId || project.client.code,
     currency: project.currency || "USD",
   }));
-  const opportunityAnalysis = mapOpportunityAnalysis(opportunities, opportunityFrameworkVersionSettings);
+  const opportunityAnalysis = mapOpportunityAnalysis(opportunities, opportunityFrameworkVersionSettings, sdsSummarySettings);
   const changeRequestsByProject = new Map<string, { additionalBudget: number; additionalRevenue: number }>();
   deliveryGovernanceRegistry.changeRequests
     .filter((cr) => cr.approvalStatus === "approved")
@@ -272,6 +288,9 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
       invoices: scopedInvoices.length,
     },
     users: isSuperAdmin ? users.map(userToRecord) : [],
+    team_directory: users
+      .filter((row) => row.status === "ACTIVE")
+      .map((row) => ({ id: row.fullName, label: `${row.fullName} — ${row.role.code.replace(/^ROLE_/, "").replaceAll("_", " ")}`, meta: row.role.code })),
     clients: clientOptions,
     projects: projectOptions,
     candidates: scopedCandidates,
@@ -507,7 +526,7 @@ function mapOpportunityAnalysis(opportunities: Array<{
       comment: string | null;
     }>;
   }>;
-}>, frameworkVersionSettings: Array<{ value: unknown }>) {
+}>, frameworkVersionSettings: Array<{ value: unknown }>, sdsSummarySettings: Array<{ value: unknown }>) {
   const frameworkVersionByOpportunity = new Map<string, string>();
   frameworkVersionSettings.forEach((setting) => {
     if (!setting.value || typeof setting.value !== "object" || Array.isArray(setting.value)) return;
@@ -515,6 +534,13 @@ function mapOpportunityAnalysis(opportunities: Array<{
     const entityId = typeof value.entityId === "string" ? value.entityId : "";
     const frameworkVersion = typeof value.frameworkVersion === "string" ? value.frameworkVersion : "";
     if (entityId && frameworkVersion) frameworkVersionByOpportunity.set(entityId, frameworkVersion);
+  });
+  const sdsSummaryById = new Map<string, Record<string, unknown>>();
+  sdsSummarySettings.forEach((setting) => {
+    if (!setting.value || typeof setting.value !== "object" || Array.isArray(setting.value)) return;
+    const value = setting.value as Record<string, unknown>;
+    const sdsId = typeof value.sdsId === "string" ? value.sdsId : "";
+    if (sdsId) sdsSummaryById.set(sdsId, value);
   });
   const rows = opportunities.map((opportunity) => {
     const commercialScenario = opportunity.scenarios.find((scenario) => scenario.status === "selected") || opportunity.scenarios[0];
@@ -609,22 +635,43 @@ function mapOpportunityAnalysis(opportunities: Array<{
       approved_by: option.approvedBy || "",
       approved_at: formatDbDateTime(option.approvedAt),
       status: option.status,
+      // Raw inputs are not stored as their own columns (only the derived `calculation`
+      // JSON is) - recovered here so the edit form can be prefilled with what was
+      // originally entered instead of forcing the user to retype everything.
+      invoice_date: inflowDateMinusDso(option.calculation, option.dsoDays),
+      cost_date: calculationField(option.calculation, "costOutflowDate"),
+      cost_amount: calculationAssumption(option.calculation, "costAmount"),
+      discount_rate_percent: calculationField(option.calculation, "discountRatePercent"),
+      schedule: calculationSchedule(option.calculation),
     }))),
-    sdsRecords: opportunities.flatMap((opportunity) => opportunity.sdsApprovals.map((sds) => ({
-      sds_id: sds.id,
-      opportunity_id: opportunity.opportunityCode,
-      selected_scenario: sds.selectedScenario || "",
-      selected_cashflow: sds.selectedCashflow || "",
-      customer_value: sds.customerValue || "",
-      company_value: sds.companyValue || "",
-      business_value_notes: [sds.customerValue, sds.companyValue, sds.upsellOpportunity, sds.growthAspect].filter(Boolean).join(" | "),
-      delivery_capability_notes: sds.deliveryCapability || "",
-      decision: sds.decision,
-      approver: sds.sponsor || "",
-      timestamp: formatDbDateTime(sds.decidedAt),
-      comments: sds.comment || "",
-      status: sds.decision,
-    }))),
+    sdsRecords: opportunities.flatMap((opportunity) => opportunity.sdsApprovals.map((sds) => {
+      const summary = sdsSummaryById.get(sds.id) || {};
+      const fromSummary = (key: string) => typeof summary[key] === "string" ? summary[key] as string : "";
+      return {
+        sds_id: sds.id,
+        opportunity_id: opportunity.opportunityCode,
+        selected_scenario: sds.selectedScenario || "",
+        selected_cashflow: sds.selectedCashflow || "",
+        customer_value: sds.customerValue || "",
+        company_value: sds.companyValue || "",
+        business_value_notes: [sds.customerValue, sds.companyValue, sds.upsellOpportunity, sds.growthAspect].filter(Boolean).join(" | "),
+        delivery_capability_notes: sds.deliveryCapability || "",
+        // Derived server-side from the opportunity/scenario/risk/cashflow/pricing records
+        // at SDS creation time (see deriveSdsSummary in actions.ts) - not hand-typed.
+        opportunity_outcome: fromSummary("opportunityOutcome"),
+        commodity_breakdown: fromSummary("commodityBreakdown"),
+        risk_summary: fromSummary("riskSummary"),
+        cashflow_outcome: fromSummary("cashflowOutcome"),
+        pricing_structure_decision: fromSummary("pricingStructureDecision"),
+        presenter_role: fromSummary("presenterRole"),
+        presenter_name: fromSummary("presenterName"),
+        decision: sds.decision,
+        approver: sds.sponsor || "",
+        timestamp: formatDbDateTime(sds.decidedAt),
+        comments: sds.comment || "",
+        status: sds.decision,
+      };
+    })),
     sdoaRecords: opportunities.flatMap((opportunity) => opportunity.sdoaApprovals.map((sdoa) => ({
       sdoa_id: sdoa.id,
       opportunity_id: opportunity.opportunityCode,
@@ -666,6 +713,31 @@ function calculationField(calculation: unknown, key: string) {
   if (!calculation || typeof calculation !== "object" || Array.isArray(calculation)) return "";
   const value = (calculation as Record<string, unknown>)[key];
   return value === undefined || value === null ? "" : String(value);
+}
+
+function calculationAssumption(calculation: unknown, key: string) {
+  if (!calculation || typeof calculation !== "object" || Array.isArray(calculation)) return "";
+  const assumptions = (calculation as Record<string, unknown>).assumptions;
+  if (!assumptions || typeof assumptions !== "object" || Array.isArray(assumptions)) return "";
+  const value = (assumptions as Record<string, unknown>)[key];
+  return value === undefined || value === null ? "" : String(value);
+}
+
+function calculationSchedule(calculation: unknown) {
+  if (!calculation || typeof calculation !== "object" || Array.isArray(calculation)) return "[]";
+  const schedule = (calculation as Record<string, unknown>).schedule;
+  return Array.isArray(schedule) ? JSON.stringify(schedule) : "[]";
+}
+
+/** invoiceDate isn't stored as its own column - only derived from it (cashInflowDate =
+ * invoiceDate + dsoDays). Reconstruct it so the edit form can be prefilled. */
+function inflowDateMinusDso(calculation: unknown, dsoDays: number) {
+  const cashInflowDate = calculationField(calculation, "cashInflowDate");
+  if (!cashInflowDate) return "";
+  const parsed = new Date(cashInflowDate);
+  if (Number.isNaN(parsed.getTime())) return "";
+  parsed.setUTCDate(parsed.getUTCDate() - dsoDays);
+  return parsed.toISOString().slice(0, 10);
 }
 
 async function getFrameworkControlPlane(organizationId: string): Promise<FrameworkControlPlane> {
@@ -899,6 +971,7 @@ function emptyData(user: DashboardData["user"]): DashboardData {
     sessionEmail: "",
     metrics: { candidates: 0, employees: 0, pendingFeedback: 0, readyResources: 0 },
     users: [],
+    team_directory: [],
     candidates: [],
     employees: [],
     clients: [],
@@ -951,45 +1024,147 @@ function emptyData(user: DashboardData["user"]): DashboardData {
   };
 }
 
+const IDBGF_PILLARS = [
+  {
+    icon: ListChecks,
+    title: "Project Delivery Governance",
+    desc: "Gate reviews and change control tracked across every engagement milestone.",
+  },
+  {
+    icon: Briefcase,
+    title: "Commercial Governance",
+    desc: "Structured decisions on scope, pricing, and contract commitments before they're signed.",
+  },
+  {
+    icon: DollarSign,
+    title: "Financial Governance",
+    desc: "Net sales, margin, and cash-schedule performance tracked against baseline in real time.",
+  },
+  {
+    icon: Users,
+    title: "Resource Governance",
+    desc: "Staffing gaps and capacity surfaced before they become delivery risk.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Quality Governance",
+    desc: "Incident severity and resolution tracked to closure, not lost in a chat thread.",
+  },
+] as const;
+
+// Deliberately single-theme (dark) regardless of the visitor's OS preference -
+// a common enterprise pattern (Azure, Salesforce): the sign-in screen carries the
+// brand rather than following light/dark toggles.
 function LoginPage({ error, sessionEmail }: { error?: string; sessionEmail?: string }) {
   return (
-    <main className="grid min-h-screen place-items-center bg-slate-950 px-6">
-      <div className="w-full max-w-md rounded-lg border border-slate-800 bg-slate-900 p-8 text-white shadow-2xl">
-        <p className="text-sm uppercase tracking-[0.2em] text-teal-300">NEXUS SEVENFOLD</p>
-        <h1 className="mt-3 text-2xl font-semibold">Sign in to Nexus</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-300">
-          Your Nexus account is verified through the Apps Script API and users tab.
-        </p>
-        {sessionEmail && (
-          <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-            Signed in as {sessionEmail}, but this account is not active in Nexus users.
+    <main className="grid min-h-screen bg-[#0c0b12] text-[#eceafb] lg:grid-cols-[1.35fr_1fr]">
+      <section className="hidden flex-col justify-between bg-gradient-to-br from-[#1a1830] to-[#131123] p-14 lg:flex">
+        <div>
+          <div className="mb-16 flex items-center gap-3">
+            <div className="h-8 w-8 flex-none rounded-lg bg-gradient-to-br from-[#8688e0] to-[#5b5db0]" />
+            <div>
+              <div className="text-sm font-bold tracking-wide text-white">NEXUS SEVENFOLD</div>
+              <div className="text-xs text-[#9490bf]">Business &amp; Project Management</div>
+            </div>
           </div>
-        )}
-        {error && (
-          <div className="mt-4 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-100">
-            {error}
+
+          <h1 className="mb-3 max-w-[15ch] text-balance text-3xl font-bold leading-tight text-white">
+            Delivery governance, run like an operating system.
+          </h1>
+          <p className="mb-11 max-w-[46ch] text-sm leading-relaxed text-[#b3aed8]">
+            One workspace covering opportunity-to-cash: pricing decisions, cashflow analysis, project execution, and
+            delivery governance — for teams running managed services, professional services, and transformation
+            programs.
+          </p>
+
+          <div className="mb-1 text-xs font-bold uppercase tracking-widest text-[#a6a2e8]">Governance framework</div>
+          <div className="mb-1.5 text-base font-bold text-white">
+            Integrated Delivery &amp; Business Governance Framework
           </div>
-        )}
-        <form action="/api/auth/login" className="mt-6 grid gap-3" method="post">
-          <input
-            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-            name="email"
-            placeholder="Email"
-            required
-            type="email"
-          />
-          <input
-            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-            name="password"
-            placeholder="Password"
-            required
-            type="password"
-          />
-          <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700" type="submit">
-            Sign in
-          </button>
-        </form>
-      </div>
+          <p className="mb-6 max-w-[50ch] text-sm leading-relaxed text-[#9490bf]">
+            Built for complex services, managed services, professional services, solution delivery, and
+            transformation programs — IDBGF integrates five governance disciplines into one continuous review cycle,
+            instead of five disconnected spreadsheets.
+          </p>
+
+          <div className="grid gap-4">
+            {IDBGF_PILLARS.map((pillar) => (
+              <div key={pillar.title} className="flex items-start gap-3">
+                <div className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-[#8688e0]/30 bg-[#8688e0]/15">
+                  <pillar.icon className="h-4 w-4 text-[#b7b4ff]" strokeWidth={1.8} />
+                </div>
+                <div>
+                  <div className="mb-0.5 text-sm font-semibold text-[#f0eefb]">{pillar.title}</div>
+                  <div className="max-w-[44ch] text-xs leading-relaxed text-[#938fbb]">{pillar.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-9 border-t border-white/10 pt-4 text-xs text-[#726d99]">
+          Access is restricted to authorized personnel of your organization.
+        </div>
+      </section>
+
+      <section className="flex items-center justify-center px-6 py-10">
+        <div className="w-full max-w-[380px]">
+          <h1 className="mb-1.5 text-xl font-bold text-white">Sign in</h1>
+          <p className="mb-7 text-sm text-[#948fba]">Use your organization account to continue.</p>
+
+          {sessionEmail && (
+            <div className="mb-5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+              Signed in as {sessionEmail}, but this account isn&apos;t active yet. Contact your workspace administrator.
+            </div>
+          )}
+          {error && (
+            <div className="mb-5 rounded-lg border border-red-500/35 bg-red-500/10 p-3 text-sm text-red-100">
+              {error}
+            </div>
+          )}
+
+          <form action="/api/auth/login" className="grid gap-4" method="post">
+            <div>
+              <label htmlFor="login-email" className="mb-1.5 block text-xs font-semibold text-[#c7c3e8]">
+                Email
+              </label>
+              <input
+                id="login-email"
+                className="w-full rounded-lg border border-[#2c2940] bg-[#17151f] px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#605c85] focus:border-[#8688e0] focus:ring-2 focus:ring-[#8688e0]/25"
+                name="email"
+                placeholder="you@company.com"
+                required
+                type="email"
+              />
+            </div>
+            <div>
+              <label htmlFor="login-password" className="mb-1.5 block text-xs font-semibold text-[#c7c3e8]">
+                Password
+              </label>
+              <input
+                id="login-password"
+                className="w-full rounded-lg border border-[#2c2940] bg-[#17151f] px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#605c85] focus:border-[#8688e0] focus:ring-2 focus:ring-[#8688e0]/25"
+                name="password"
+                placeholder="••••••••"
+                required
+                type="password"
+              />
+            </div>
+            <button
+              className="mt-1 rounded-lg bg-[#6264a7] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#54568e]"
+              type="submit"
+            >
+              Sign in
+            </button>
+          </form>
+
+          <p className="mt-6 text-center text-xs leading-relaxed text-[#746fa0]">
+            Access is provisioned by your workspace administrator.
+            <br />
+            Contact them if you don&apos;t have an account yet.
+          </p>
+        </div>
+      </section>
     </main>
   );
 }
