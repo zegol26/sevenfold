@@ -24,6 +24,30 @@ function getValue(formData: FormData, key: string) {
   return String(formData.get(key) || "").trim();
 }
 
+/**
+ * Next.js redacts thrown Error messages from Server Actions in production
+ * (client only sees a generic "Server Components render..." message + digest).
+ * Actions that want their validation message to actually reach the user must
+ * catch it here and return `{ error }` instead of throwing - see ActionForm's
+ * ActionResult union, which already knows how to render this as the error banner.
+ * `redirect()`/`notFound()` throw a special digest-tagged error that must keep
+ * propagating unchanged, so those are excluded and rethrown.
+ */
+function isNextControlFlowSignal(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "digest" in error &&
+    typeof (error as { digest?: unknown }).digest === "string" &&
+    ((error as { digest: string }).digest.startsWith("NEXT_REDIRECT") || (error as { digest: string }).digest.startsWith("NEXT_HTTP_ERROR"))
+  );
+}
+
+function toActionError(error: unknown): { error: string } {
+  if (isNextControlFlowSignal(error)) throw error;
+  return { error: error instanceof Error && error.message ? error.message : "The request could not be completed. Please try again." };
+}
+
 function requireValue(value: string, label: string) {
   if (!value) {
     throw new Error(`${label} is required`);
@@ -943,6 +967,7 @@ export async function createProposalScenarioAction(formData: FormData) {
 }
 
 export async function updateProposalScenarioAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SOLUTION_ARCHITECT", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
@@ -965,9 +990,13 @@ export async function updateProposalScenarioAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_PROPOSAL_SCENARIO", entityType: "proposal_scenario", entityId: updated.scenarioCode, before: scenario, after: updated });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createCommodityCostLineAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireOpportunityManager(actor);
   const organizationId = requireOrganizationId(actor);
@@ -1005,6 +1034,9 @@ export async function createCommodityCostLineAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "ADD_COMMODITY_COST_LINE", entityType: "proposal_scenario", entityId: scenario.scenarioCode, after: { totalCost, totalPrice } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createOpportunityRiskAction(formData: FormData) {
@@ -1196,6 +1228,7 @@ export async function approveCashflowOptionAction(formData: FormData) {
 }
 
 export async function createSdsAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -1248,6 +1281,9 @@ export async function createSdsAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_SDS", entityType: "sds", entityId: sds.id, after: { opportunity: opportunity.opportunityCode, presenterRole } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 type OpportunityForSdsDerivation = Prisma.OpportunityGetPayload<{

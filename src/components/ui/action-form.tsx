@@ -48,7 +48,11 @@ export function ActionForm({
   confirmMessage,
   successMessage = "Saved successfully.",
 }: {
-  action: (formData: FormData) => Promise<void>;
+  // Server actions may either throw (legacy - Next.js redacts the message in
+  // production, so ActionForm falls back to a generic banner) or return
+  // `{ error }` (preferred - the real message always reaches the user; see
+  // actions.ts's toActionError helper).
+  action: (formData: FormData) => Promise<void | { error: string }>;
   className?: string;
   children: React.ReactNode;
   /** Ask before actions with business consequences (approvals, rejections, gate moves). */
@@ -60,7 +64,10 @@ export function ActionForm({
   const [result, dispatch, pending] = React.useActionState<ActionResult, FormData>(
     async (_previous, formData) => {
       try {
-        await action(formData);
+        const outcome = await action(formData);
+        if (outcome && typeof outcome === "object" && "error" in outcome && outcome.error) {
+          return { status: "error", message: outcome.error, at: Date.now() };
+        }
         return { status: "success", at: Date.now() };
       } catch (error) {
         if (isNextControlFlowError(error)) throw error;

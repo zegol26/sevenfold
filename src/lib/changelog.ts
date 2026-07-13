@@ -11,6 +11,16 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.2",
+    date: "2026-07-14",
+    slogan: "Failed saves now tell you why, instead of a generic 'could not be completed' banner.",
+    highlights: [
+      "Root cause: Next.js hides the real error message from any Server Action that throws once deployed to production, no matter how clear the message is - the form always fell back to a generic banner.",
+      "Added a return-based error path (toActionError) that survives production, and wired ActionForm to use it. Converted Update Scenario, Add Commodity Cost Line, and Create SDS (Sales Decision for Submission) as the first three - their errors (missing scenario, ungated SDS, presenter role mismatch, etc.) now show their real reason on screen.",
+      "The remaining action forms still use the old throw-based path (same generic banner as before) and are next in line to convert to the same pattern.",
+    ],
+  },
+  {
     version: "0.3.1",
     date: "2026-07-14",
     slogan: "Fixed a 'Scenario not found' error when adding commodity cost lines.",
