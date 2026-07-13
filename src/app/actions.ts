@@ -808,6 +808,7 @@ export async function updateOpportunityAction(formData: FormData) {
 }
 
 export async function transitionOpportunityStatusAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const opportunityCode = getValue(formData, "opportunity_id");
@@ -851,6 +852,9 @@ export async function transitionOpportunityStatusAction(formData: FormData) {
     after: { status: updated.status, comment: getValue(formData, "comment") || undefined },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function cloneOpportunityAction(formData: FormData) {
@@ -1071,6 +1075,7 @@ export async function createOpportunityRiskAction(formData: FormData) {
 }
 
 export async function createPricingDecisionAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -1094,6 +1099,9 @@ export async function createPricingDecisionAction(formData: FormData) {
   }
   await writeAudit({ actorId: actor?.id, action: "CREATE_PRICING_DECISION", entityType: "pricing_decision", entityId: decision.id, after: { opportunity: opportunity.opportunityCode, decision: decision.decision } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createCashflowOptionAction(formData: FormData) {
