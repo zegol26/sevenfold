@@ -11,6 +11,15 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.1",
+    date: "2026-07-14",
+    slogan: "Fixed a 'Scenario not found' error when adding commodity cost lines.",
+    highlights: [
+      "Add Commodity Cost Structure now picks the Scenario from a dropdown scoped to the selected Opportunity, instead of a free-text ID - eliminates the typo/wrong-ID mismatches that were throwing 'Scenario not found'.",
+      "The underlying error (also reachable from Edit Scenario) now names the scenario and opportunity IDs it looked for, so any future mismatch is diagnosable straight from the error instead of a bare message.",
+    ],
+  },
+  {
     version: "0.3.0",
     date: "2026-07-13",
     slogan: "Enterprise workflow pass: guarded opportunity lifecycle, stable forms, currency-safe figures, and an in-product Knowledge Guide.",

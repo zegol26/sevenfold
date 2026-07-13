@@ -946,10 +946,12 @@ export async function updateProposalScenarioAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SOLUTION_ARCHITECT", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
+  const scenarioCode = getValue(formData, "scenario_id");
+  const opportunityCode = getValue(formData, "opportunity_id");
   const scenario = await getDb().proposalScenario.findFirst({
-    where: { scenarioCode: getValue(formData, "scenario_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
+    where: { scenarioCode, opportunity: { organizationId, opportunityCode } },
   });
-  if (!scenario) throw new Error("Scenario not found");
+  if (!scenario) throw new Error(`Scenario not found: "${scenarioCode}" under opportunity "${opportunityCode}". Check the scenario ID belongs to this opportunity and organization.`);
   // Status intentionally not editable here - "selected" is only ever set via
   // createPricingDecisionAction's commercial-scenario flow; letting a plain edit
   // override that would silently break pricing decisions tied to the scenario.
@@ -969,11 +971,13 @@ export async function createCommodityCostLineAction(formData: FormData) {
   const { user: actor } = await currentActor();
   requireOpportunityManager(actor);
   const organizationId = requireOrganizationId(actor);
+  const scenarioCode = getValue(formData, "scenario_id");
+  const opportunityCode = getValue(formData, "opportunity_id");
   const scenario = await getDb().proposalScenario.findFirst({
-    where: { scenarioCode: getValue(formData, "scenario_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
+    where: { scenarioCode, opportunity: { organizationId, opportunityCode } },
     include: { commodityLines: true },
   });
-  if (!scenario) throw new Error("Scenario not found");
+  if (!scenario) throw new Error(`Scenario not found: "${scenarioCode}" under opportunity "${opportunityCode}". Check the scenario ID belongs to this opportunity and organization.`);
   await getDb().proposalCommodityLine.create({
     data: {
       scenarioId: scenario.id,

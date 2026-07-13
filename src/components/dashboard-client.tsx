@@ -1062,6 +1062,10 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
   const currencies = frameworkCurrencyOptions(data);
   const scenarioCurrency = scenarioCurrencyLookup(analysis.scenarios);
   const opportunityCurrency = opportunityCurrencyLookup(analysis.scenarios);
+  const [commodityOpportunityId, setCommodityOpportunityId] = useState("");
+  const commodityScenarioOptions = analysis.scenarios
+    .filter((scenario) => scenario.opportunity_id === commodityOpportunityId)
+    .map((scenario) => ({ id: scenario.scenario_id, label: `${scenario.scenario_id} - ${scenario.scenario_name}` }));
 
   return (
     <section className="grid gap-5">
@@ -1136,8 +1140,8 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
         <TabsContent value="commodities">
           <OpportunityFormCard title="Add Commodity Cost Structure">
             <ActionForm action={createCommodityCostLineAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-              <OpportunitySelect opportunities={opportunityOptions} />
-              <Input name="scenario_id" placeholder="Scenario ID" required />
+              <OpportunitySelect opportunities={opportunityOptions} value={commodityOpportunityId} onValueChange={setCommodityOpportunityId} />
+              <ScenarioSelect scenarios={commodityScenarioOptions} disabled={!commodityOpportunityId} />
               <Select name="commodity_code" required>
                 <SelectTrigger><SelectValue placeholder="Commodity" /></SelectTrigger>
                 <SelectContent>{commodityCodes.map((item) => <SelectItem key={item.code} value={item.code}>{item.name}</SelectItem>)}</SelectContent>
@@ -1876,11 +1880,43 @@ function actionLabel(title: string) {
   return "Open";
 }
 
-function OpportunitySelect({ opportunities }: { opportunities: { id: string; label: string }[] }) {
+function OpportunitySelect({
+  opportunities,
+  value,
+  onValueChange,
+}: {
+  opportunities: { id: string; label: string }[];
+  value?: string;
+  onValueChange?: (value: string) => void;
+}) {
   return (
-    <Select name="opportunity_id" required>
+    <Select name="opportunity_id" required value={value} onValueChange={onValueChange}>
       <SelectTrigger><SelectValue placeholder="Opportunity ID" /></SelectTrigger>
       <SelectContent>{opportunities.map((opportunity) => <SelectItem key={opportunity.id} value={opportunity.id}>{opportunity.label}</SelectItem>)}</SelectContent>
+    </Select>
+  );
+}
+
+/** Scenario ID picker scoped to whichever opportunity is currently selected above it -
+ * prevents typing a scenario ID that belongs to a different opportunity/org, which
+ * previously surfaced as an opaque "Scenario not found" error on submit. */
+function ScenarioSelect({
+  scenarios,
+  value,
+  onValueChange,
+  disabled,
+}: {
+  scenarios: { id: string; label: string }[];
+  value?: string;
+  onValueChange?: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Select name="scenario_id" required value={value} onValueChange={onValueChange} disabled={disabled}>
+      <SelectTrigger>
+        <SelectValue placeholder={disabled ? "Select an opportunity first" : scenarios.length ? "Scenario ID" : "No scenarios for this opportunity"} />
+      </SelectTrigger>
+      <SelectContent>{scenarios.map((scenario) => <SelectItem key={scenario.id} value={scenario.id}>{scenario.label}</SelectItem>)}</SelectContent>
     </Select>
   );
 }
