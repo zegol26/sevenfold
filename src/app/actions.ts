@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { InvoiceStatus, Prisma, ResourceKind, UserStatus } from "@prisma/client";
 import * as XLSX from "xlsx";
 import { calculateCashflow } from "@/lib/cashflowEngine";
+import { OPPORTUNITY_WORKFLOW_TRANSITIONS } from "@/lib/opportunityWorkflow";
 import { getDb } from "@/lib/db";
 import { defaultFrameworkControlPlane } from "@/lib/framework-defaults";
 import { hashPassword, verifyPassword } from "@/lib/password";
@@ -779,6 +780,52 @@ export async function updateOpportunityAction(formData: FormData) {
     },
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_OPPORTUNITY", entityType: "opportunity", entityId: updated.opportunityCode, before: existing, after: updated });
+  revalidatePath("/");
+}
+
+export async function transitionOpportunityStatusAction(formData: FormData) {
+  const { user: actor } = await currentActor();
+  const organizationId = requireOrganizationId(actor);
+  const opportunityCode = getValue(formData, "opportunity_id");
+  const workflowAction = getValue(formData, "workflow_action");
+  requireValue(opportunityCode, "Opportunity ID");
+  requireValue(workflowAction, "Workflow action");
+
+  const opportunity = await getDb().opportunity.findUnique({
+    where: { organizationId_opportunityCode: { organizationId, opportunityCode } },
+    include: { scenarios: true, pricingDecisions: true, cashflowOptions: true },
+  });
+  if (!opportunity) throw new Error("Opportunity not found");
+
+  const transition = (OPPORTUNITY_WORKFLOW_TRANSITIONS[opportunity.status] || []).find((item) => item.action === workflowAction);
+  if (!transition) {
+    throw new Error(`This action is not available while the opportunity is in "${opportunity.status.replaceAll("_", " ")}" status.`);
+  }
+  requireActorRole(actor, transition.roles);
+
+  // Entry criteria per target status.
+  if (transition.to === "submitted" && opportunity.scenarios.length === 0) {
+    throw new Error("Add at least one proposal scenario before submitting the opportunity for review.");
+  }
+  if (transition.to === "pricing_approved" && !opportunity.pricingDecisions.some((decision) => decision.status === "approved")) {
+    throw new Error("An approved Pricing Structure Decision is required before pricing can be approved. Record it under Pricing Decision first.");
+  }
+  if (transition.to === "approved" && !opportunity.cashflowOptions.some((option) => option.status === "approved")) {
+    throw new Error("An approved cashflow option is required before final opportunity approval. Approve one under Cashflow Analysis first.");
+  }
+
+  const updated = await getDb().opportunity.update({
+    where: { id: opportunity.id },
+    data: { status: transition.to, updatedBy: actor?.email || null },
+  });
+  await writeAudit({
+    actorId: actor?.id,
+    action: `OPPORTUNITY_${workflowAction.toUpperCase()}`,
+    entityType: "opportunity",
+    entityId: updated.opportunityCode,
+    before: { status: opportunity.status },
+    after: { status: updated.status, comment: getValue(formData, "comment") || undefined },
+  });
   revalidatePath("/");
 }
 

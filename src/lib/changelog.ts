@@ -11,6 +11,20 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.0",
+    date: "2026-07-13",
+    slogan: "Enterprise workflow pass: guarded opportunity lifecycle, stable forms, currency-safe figures, and an in-product Knowledge Guide.",
+    highlights: [
+      "Opportunity status now moves only through explicit workflow actions (Submit for Review, Approve Pricing Structure, Release to Cashflow, Approve Opportunity) with server-side entry criteria, role checks, and audit trail.",
+      "Every form is now protected: unsaved changes survive accidental clicks and failures, dialogs confirm before discarding, duplicate submits are blocked, and successful saves close with clear feedback.",
+      "Every monetary value shows its currency (from registered scenario/option/project/invoice data); mixed-currency totals are flagged instead of mislabeled.",
+      "Opportunity detail reorganized into an executive header plus Scope & Commercial, Risks, Cashflow, and Approvals & History tabs; opportunity rows are fully clickable.",
+      "Opportunity Analysis leads with 'My Opportunities' (your deals and their next step) instead of generic counters.",
+      "New Knowledge Guide (Help menu): searchable manuals for sales, delivery & governance, and workforce management, with lifecycle references, glossary, and FAQs.",
+      "Grouped, scrollable navigation with a proper mobile drawer; tables scroll horizontally on small screens; internal/technical wording replaced with product language.",
+    ],
+  },
+  {
     version: "0.2.0",
     date: "2026-07-12",
     slogan: "Opportunities and Cashflow Options are now editable, and clickable through to full detail.",

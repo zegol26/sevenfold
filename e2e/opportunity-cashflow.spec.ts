@@ -1,18 +1,20 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// UAT for the Create Opportunity -> Scenario -> Commodity Line -> Cashflow Option
-// -> Approve path, plus the edit and detail-page affordances added on top of it.
+// UAT for the full guarded opportunity lifecycle:
+// Create (Draft) -> Scenario -> Commodity Line -> Pricing Decision ->
+// Submit for Review -> Approve Pricing Structure -> Release to Cashflow ->
+// Cashflow Option -> Approve -> Final Opportunity Approval -> detail page checks.
 //
 // Uses a real, seeded Super Admin account (Super Admin bypasses the per-action role
 // checks in src/app/actions.ts, so it can exercise every step below).
 //
-// History: the original (Phase 0) version of this spec used Radix Dialog-scoped
-// locators, because Create Opportunity/Scenario/Cashflow Option used to open in a
-// modal. That baseline run surfaced a real UX bug - the modal did not auto-close
-// after a successful save - which motivated replacing those three flows with the
-// non-modal inline panels this spec now drives (see InlineFormPanel in
-// dashboard-client.tsx). Nothing here should ever need to reach for a dialog role
-// again for these three flows.
+// History:
+// - Phase 0 surfaced the modal-doesn't-auto-close bug; the create flows moved to
+//   inline panels (InlineFormPanel) and dialogs now auto-close on success via
+//   ActionForm (src/components/ui/action-form.tsx).
+// - The enterprise-workflow pass removed the direct status dropdown: status now only
+//   changes through explicit workflow actions on the opportunity detail page, which
+//   this spec drives end to end (business plan §6.1).
 
 function readTestCredential(primaryName: string, fallbackName: string) {
   const value = process.env[primaryName] || process.env[fallbackName];
@@ -58,27 +60,27 @@ async function selectCombobox(panel: ReturnType<typeof inlinePanel>, nth: number
 }
 
 test.describe("Opportunity -> Cashflow Analysis", () => {
-  test("create, edit, drill into detail, and approve across the full flow", async ({ page }) => {
+  test("create, analyze, run workflow transitions, and approve across the full flow", async ({ page }) => {
+    // Workflow actions with business consequences ask for confirmation via a native
+    // confirm() — accept them all in this happy-path spec.
+    page.on("dialog", (dialog) => dialog.accept());
+
     await login(page);
 
-    // --- Opportunity Analysis: Create Opportunity ---
+    // --- Opportunity Analysis: Create Opportunity (always starts in Draft) ---
     await page.click('button:has-text("Opportunity Analysis")');
     await expect(page.getByRole("heading", { name: "Opportunity Analysis" })).toBeVisible();
 
-    let panel = await openInlinePanel(page, "Create Opportunity ID", "Create");
+    let panel = await openInlinePanel(page, "Create Opportunity", "Create");
     await panel.locator('input[name="opportunity_id"]').fill(OPPORTUNITY_ID);
     await panel.locator('input[name="customer_name"]').fill("Playwright QA Customer");
     await panel.locator('input[name="owner"]').fill(TEST_EMAIL);
     await selectCombobox(panel, 0, "Small");
-    // The second visible combobox is the opportunity status selector. Pick an
-    // allowed cashflow-eligible status so the flow can proceed end to end.
-    await selectCombobox(panel, 1, /^approved$/);
     await panel.locator('textarea[name="scope_summary"]').fill("Playwright E2E scope summary.");
     await panel.getByRole("button", { name: "Create Opportunity" }).click();
     await page.waitForTimeout(500);
 
-    // The panel must stay open/in-flow after submit (no auto-dismiss, no overlay) -
-    // this is the whole point of the inline-panel redesign, unlike the old modal.
+    // The panel stays in-flow after submit (no auto-dismiss, no overlay).
     await expect(panel.locator('input[name="customer_name"]')).toBeVisible();
     await expect(page.getByText(OPPORTUNITY_ID)).toBeVisible({ timeout: 10_000 });
     await panel.getByRole("button", { name: "Close", exact: true }).click();
@@ -104,8 +106,7 @@ test.describe("Opportunity -> Cashflow Analysis", () => {
     await page.waitForTimeout(500);
     await expect(page.getByText(SCENARIO_ID)).toBeVisible({ timeout: 10_000 });
 
-    // --- Commodity Cost Line (still the original Dialog flow - Commodity/Risk/Pricing
-    // stayed create-only and out of scope for the inline-panel conversion) ---
+    // --- Commodity Cost Line (Dialog flow; auto-closes on successful save) ---
     await page.click('[role="tab"]:has-text("Commodity Cost")');
     await page.getByRole("button", { name: "Add", exact: true }).click();
     const commodityDialog = page.getByRole("dialog");
@@ -116,12 +117,35 @@ test.describe("Opportunity -> Cashflow Analysis", () => {
     await commodityDialog.locator('input[name="unit_cost"]').fill("1000");
     await commodityDialog.locator('input[name="unit_price"]').fill("1500");
     await commodityDialog.getByRole("button", { name: "Add Cost Line" }).click();
-    await page.waitForTimeout(500);
-    // Known UX gap (documented in Phase 0): this Dialog does not auto-close on save.
-    const cancelButton = commodityDialog.getByRole("button", { name: "Cancel" });
-    if (await cancelButton.isVisible().catch(() => false)) await cancelButton.click();
-    await page.waitForTimeout(500);
+    // Successful dialog submissions now close the dialog automatically.
+    await expect(commodityDialog).not.toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(SCENARIO_ID).first()).toBeVisible({ timeout: 10_000 });
+
+    // --- Pricing Structure Decision (approved) — entry criterion for the
+    // "Approve Pricing Structure" workflow action ---
+    await page.click('[role="tab"]:has-text("Pricing Decision")');
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    const pricingDialog = page.getByRole("dialog");
+    await expect(pricingDialog).toBeVisible();
+    await selectCombobox(pricingDialog, 0, new RegExp(OPPORTUNITY_ID));
+    await pricingDialog.locator('input[name="scenario_id"]').fill(SCENARIO_ID);
+    await pricingDialog.locator('input[name="decision"]').fill(`SELECT_${SCENARIO_ID}`);
+    await selectCombobox(pricingDialog, 1, /^Approved$/);
+    await selectCombobox(pricingDialog, 2, /Mark as commercial scenario/);
+    await pricingDialog.getByRole("button", { name: "Save Pricing Decision" }).click();
+    await expect(pricingDialog).not.toBeVisible({ timeout: 10_000 });
+
+    // --- Drive the explicit lifecycle on the opportunity detail page ---
+    await page.click('[role="tab"]:has-text("Opportunities")');
+    const detailLink = page.locator(`a[href*="${encodeURIComponent(OPPORTUNITY_ID)}"]`).first();
+    await detailLink.click();
+    await expect(page.getByText("Back to Opportunities")).toBeVisible({ timeout: 10_000 });
+
+    for (const action of ["Submit for Review", "Approve Pricing Structure", "Release to Cashflow Analysis"]) {
+      await page.getByRole("button", { name: action, exact: true }).click();
+      await page.waitForTimeout(800);
+    }
+    await expect(page.getByText("Ready for Cashflow").first()).toBeVisible({ timeout: 10_000 });
 
     // --- Cashflow Analysis ---
     await page.click('button:has-text("Cashflow Analysis")');
@@ -148,14 +172,14 @@ test.describe("Opportunity -> Cashflow Analysis", () => {
     await expect(page.locator("tr", { hasText: CASHFLOW_OPTION_ID })).toContainText("160,000");
     await cashflowRow.getByRole("button", { name: "Close", exact: true }).click();
 
-    // --- Approve the cashflow option, then confirm editing locks ---
+    // --- Approve the cashflow option (confirmation auto-accepted), then confirm lock ---
     const approveRow = page.locator("tr", { hasText: CASHFLOW_OPTION_ID });
     await approveRow.getByRole("button", { name: "Approve" }).click();
     await page.waitForTimeout(500);
     await expect(approveRow.getByText(/approved/i)).toBeVisible({ timeout: 10_000 });
     await expect(approveRow.getByRole("button", { name: "Edit", exact: true })).toBeDisabled();
 
-    // --- Click through to the Opportunity Object Page ---
+    // --- Final opportunity approval + detail page information architecture ---
     await page.click('button:has-text("Opportunity Analysis")');
     await page.waitForTimeout(300);
     const link = page.locator(`a[href*="${encodeURIComponent(OPPORTUNITY_ID)}"]`).first();
@@ -164,9 +188,15 @@ test.describe("Opportunity -> Cashflow Analysis", () => {
     await link.click();
     await page.waitForTimeout(500);
     await expect(page.getByText("Back to Opportunities")).toBeVisible();
-    // Scenario/cashflow codes legitimately repeat across the header + section
-    // tables on this page, so assert presence rather than a unique match.
+
+    await page.getByRole("button", { name: "Approve Opportunity", exact: true }).click();
+    await page.waitForTimeout(800);
+    await expect(page.getByText(/Commercially approved/).first()).toBeVisible({ timeout: 10_000 });
+
+    // Detail tabs: commercial + cashflow content is present and currency-labelled.
     await expect(page.getByText(SCENARIO_ID).first()).toBeVisible();
+    await page.getByRole("tab", { name: /Cashflow/ }).click();
     await expect(page.getByText(CASHFLOW_OPTION_ID).first()).toBeVisible();
+    await expect(page.getByText(/\$160,000|\$\s160,000/).first()).toBeVisible();
   });
 });

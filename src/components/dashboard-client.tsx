@@ -3,9 +3,10 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
+  BookOpen,
   BriefcaseBusiness,
   CalendarDays,
   CheckCircle2,
@@ -18,6 +19,7 @@ import {
   Handshake,
   LayoutDashboard,
   LogOut,
+  Menu,
   Pencil,
   Plus,
   ReceiptText,
@@ -28,6 +30,7 @@ import {
   Target,
   Timer,
   Users,
+  X,
 } from "lucide-react";
 import {
   addFrameworkItemAction,
@@ -85,6 +88,7 @@ import {
   upsertProjectResourceDemandAction,
   upsertRatecardResourceAction,
   upsertSiteHandlerAction,
+  transitionOpportunityStatusAction,
   transitionTemplateAction,
   updateOpportunityAction,
   updateProposalScenarioAction,
@@ -92,6 +96,10 @@ import {
   uploadTemplateAction,
 } from "@/app/actions";
 import type { DashboardData, RecordMap, RoleId } from "@/lib/types";
+import { formatMoney, formatMoneyCompact, formatRatioAsPercent } from "@/lib/format";
+import { availableOpportunityTransitions, OPPORTUNITY_NEXT_STEP, OPPORTUNITY_STATUS_LABELS } from "@/lib/opportunityWorkflow";
+import { ACTION_SUCCESS_EVENT, ActionForm } from "@/components/ui/action-form";
+import { KnowledgeGuide } from "@/components/knowledge-guide";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -126,6 +134,7 @@ import { cn } from "@/lib/utils";
 
 type Section =
   | "home"
+  | "guide"
   | "control"
   | "opportunity"
   | "cashflow"
@@ -167,10 +176,24 @@ export function DashboardClient({
   const [clientForProject, setClientForProject] = useState(data.clients[0]?.id || "");
   const [feedbackCandidate, setFeedbackCandidate] = useState<RecordMap | null>(null);
   const [toastOpen, setToastOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState("Saved successfully.");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Single consistent success toast for every ActionForm submission in the app.
+  useEffect(() => {
+    const onSuccess = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      setToastMessage(detail?.message || "Saved successfully.");
+      setToastOpen(true);
+    };
+    document.addEventListener(ACTION_SUCCESS_EVENT, onSuccess);
+    return () => document.removeEventListener(ACTION_SUCCESS_EVENT, onSuccess);
+  }, []);
 
   const role = data.user?.role_id as RoleId;
   const nav = getNav(role, isSuperAdmin);
-  const activeSection = nav.some((item) => item.id === section) ? section : nav[0]?.id || "home";
+  const navItems = nav.flatMap((group) => group.items);
+  const activeSection = navItems.some((item) => item.id === section) ? section : navItems[0]?.id || "home";
   const filteredProjectsForCandidate = useMemo(
     () => data.projects.filter((project) => !clientForCandidate || project.meta === clientForCandidate),
     [data.projects, clientForCandidate],
@@ -185,17 +208,31 @@ export function DashboardClient({
   function handleSetSection(next: Section) {
     setSelectedOpportunityId(null);
     setSection(next);
+    setMobileNavOpen(false);
   }
 
   return (
     <ToastProvider>
       <div className="min-h-screen bg-background text-foreground">
         <div className="grid min-h-screen grid-cols-[272px_minmax(0,1fr)] max-lg:grid-cols-1">
-          <Sidebar nav={nav} section={activeSection} setSection={handleSetSection} />
+          <Sidebar
+            nav={nav}
+            section={activeSection}
+            setSection={handleSetSection}
+            mobileOpen={mobileNavOpen}
+            onMobileClose={() => setMobileNavOpen(false)}
+          />
           <main className="min-w-0">
-            <Topbar user={data.user} section={activeSection} appVersion={appVersion} changelog={changelog} />
+            <Topbar
+              user={data.user}
+              section={activeSection}
+              appVersion={appVersion}
+              changelog={changelog}
+              onOpenMobileNav={() => setMobileNavOpen(true)}
+            />
             <div className="mx-auto grid max-w-[1600px] gap-5 p-6 max-sm:p-4">
               {activeSection === "home" && <Home data={data} setSection={handleSetSection} />}
+              {activeSection === "guide" && <KnowledgeGuide role={role} />}
               {activeSection === "control" && <ControlPlanePanel auditLogs={data.audit_logs || []} settings={data.framework_settings} />}
               {activeSection === "opportunity" && (
                 selectedOpportunityId
@@ -236,6 +273,7 @@ export function DashboardClient({
                   employees={data.employees}
                   employeeContracts={data.employee_contracts || []}
                   onboardingDocuments={data.onboarding_documents || []}
+                  projects={data.projects}
                   user={data.user}
                 />
               )}
@@ -286,8 +324,8 @@ export function DashboardClient({
         </div>
       </div>
       <Toast open={toastOpen} onOpenChange={setToastOpen}>
-        <ToastTitle>Saved</ToastTitle>
-        <ToastDescription>The request was sent to the backend.</ToastDescription>
+        <ToastTitle>Success</ToastTitle>
+        <ToastDescription>{toastMessage}</ToastDescription>
       </Toast>
       <ToastViewport />
     </ToastProvider>
@@ -298,37 +336,79 @@ function Sidebar({
   nav,
   section,
   setSection,
+  mobileOpen,
+  onMobileClose,
 }: {
-  nav: { id: Section; label: string; icon: ReactNode }[];
+  nav: NavGroup[];
   section: Section;
   setSection: (section: Section) => void;
+  mobileOpen: boolean;
+  onMobileClose: () => void;
 }) {
-  return (
-    <aside className="sticky top-0 flex h-screen flex-col border-e bg-sidebar px-4 py-5 text-sidebar-foreground max-lg:static max-lg:h-auto">
-      <div className="px-2">
-        <div className="text-base font-semibold tracking-wide text-white">NEXUS SEVENFOLD</div>
-        <div className="mt-1 text-xs text-slate-300">Business & Project Management</div>
+  const content = (
+    <>
+      <div className="flex items-start justify-between px-2">
+        <div>
+          <div className="text-base font-semibold tracking-wide text-white">NEXUS SEVENFOLD</div>
+          <div className="mt-1 text-xs text-slate-300">Business & Project Management</div>
+        </div>
+        <button
+          type="button"
+          className="rounded-md p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white lg:hidden"
+          onClick={onMobileClose}
+          aria-label="Close navigation"
+        >
+          <X className="h-5 w-5" />
+        </button>
       </div>
-      <nav className="mt-7 grid gap-1">
-        {nav.map((item) => (
-          <button
-            className={cn(
-              "flex h-10 items-center gap-3 rounded-md px-3 text-left text-sm transition-colors",
-              section === item.id ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white",
+      {/* Scrollable nav region: long menus never get cut off on short screens. */}
+      <nav className="mt-5 min-h-0 flex-1 overflow-y-auto pb-4 [scrollbar-width:thin]" aria-label="Main navigation">
+        {nav.map((group) => (
+          <div key={group.label || "primary"} className="mb-4">
+            {group.label && (
+              <div className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                {group.label}
+              </div>
             )}
-            key={item.id}
-            onClick={() => setSection(item.id)}
-            type="button"
-          >
-            {item.icon}
-            {item.label}
-          </button>
+            <div className="grid gap-0.5">
+              {group.items.map((item) => (
+                <button
+                  className={cn(
+                    "flex h-9 items-center gap-3 rounded-md px-3 text-left text-sm transition-colors",
+                    section === item.id ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white",
+                  )}
+                  key={item.id}
+                  onClick={() => setSection(item.id)}
+                  aria-current={section === item.id ? "page" : undefined}
+                  type="button"
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
-      <div className="mt-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-300 max-lg:hidden">
-        Backend access is enforced by the Next.js server and database policies. Drive documents use the GAS adapter only.
-      </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Desktop rail */}
+      <aside className="sticky top-0 flex h-screen flex-col border-e bg-sidebar px-4 py-5 text-sidebar-foreground max-lg:hidden">
+        {content}
+      </aside>
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+          <div className="absolute inset-0 bg-slate-950/50" onClick={onMobileClose} />
+          <aside className="absolute inset-y-0 start-0 flex w-[300px] max-w-[85vw] flex-col bg-sidebar px-4 py-5 text-sidebar-foreground shadow-xl">
+            {content}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -337,35 +417,55 @@ function Topbar({
   section,
   appVersion,
   changelog,
+  onOpenMobileNav,
 }: {
   user: DashboardData["user"];
   section: Section;
   appVersion: string;
   changelog: ChangelogEntry[];
+  onOpenMobileNav: () => void;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-card/95 px-6 backdrop-blur max-sm:h-auto max-sm:flex-col max-sm:items-start max-sm:gap-3 max-sm:px-4 max-sm:py-4">
-      <div className="flex items-center gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-foreground">{titleFor(section)}</h1>
-          <p className="text-sm text-muted-foreground">Secure workflow operations dashboard</p>
+    <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b bg-card/95 px-6 backdrop-blur max-sm:px-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <button
+          type="button"
+          className="rounded-md border p-2 text-muted-foreground hover:bg-muted lg:hidden"
+          onClick={onOpenMobileNav}
+          aria-label="Open navigation"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold text-foreground">{titleFor(section)}</h1>
+          <p className="truncate text-sm text-muted-foreground max-sm:hidden">{descriptionFor(section)}</p>
         </div>
         <VersionBadge version={appVersion} changelog={changelog} />
       </div>
-      <div className="flex items-center gap-3">
-        <div className="text-right max-sm:text-left">
+      <div className="flex flex-none items-center gap-3">
+        <div className="text-right max-sm:hidden">
           <div className="text-sm font-medium">{user?.email}</div>
-          <Badge variant="secondary" className="mt-1">{user?.role_id}</Badge>
+          <Badge variant="secondary" className="mt-1">{humanizeRole(user?.role_id)}</Badge>
         </div>
         <form action="/api/auth/logout" method="post">
           <Button variant="outline" type="submit">
             <LogOut className="h-4 w-4" />
-            Logout
+            <span className="max-sm:hidden">Sign out</span>
           </Button>
         </form>
       </div>
     </header>
   );
+}
+
+function humanizeRole(role?: string) {
+  if (!role) return "-";
+  return role
+    .replace(/^ROLE_/, "")
+    .toLowerCase()
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }
 
 function Home({ data, setSection }: { data: DashboardData; setSection: (section: Section) => void }) {
@@ -411,28 +511,29 @@ function Home({ data, setSection }: { data: DashboardData; setSection: (section:
           </Card>
         ))}
       </div>
-      <Alert>
-        <ShieldCheck className="float-left me-2 h-4 w-4 text-blue-600" />
-        <AlertTitle>Backend enforced access</AlertTitle>
-        <AlertDescription>
-          Role, client scope, audit log, and workflow validation are enforced by the Next.js server and Neon database.
-          Google Apps Script is used only as the Google Drive repository adapter.
-        </AlertDescription>
-      </Alert>
       <Card>
         <CardHeader>
-          <CardTitle>Workflow Overview</CardTitle>
-          <CardDescription>Current MVP flow across candidate intake, client feedback, and onboarding.</CardDescription>
+          <CardTitle>Resource Workflow Overview</CardTitle>
+          <CardDescription>The end-to-end path from candidate intake to invoicing. Open the Knowledge Guide for step-by-step procedures.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-4 gap-3 text-sm max-xl:grid-cols-2 max-sm:grid-cols-1">
-            {["Create candidate", "Submit to client", "Capture feedback", "Onboard resource", "Track documents", "Approve timesheets", "Process leave/overtime", "Issue GR & invoice"].map((step, index) => (
+            {[
+              ["Create candidate", "Register the candidate profile and target client/project."],
+              ["Submit to client", "Send the candidate for client review and decision."],
+              ["Capture feedback", "Record the client's proceed, hold, or reject decision."],
+              ["Onboard resource", "Complete NDA, ethics, privacy, and training acknowledgements."],
+              ["Track documents", "Keep contracts and references complete and current."],
+              ["Approve timesheets", "Review hours and obtain client approval."],
+              ["Process leave/overtime", "Validate requests and record timesheet impact."],
+              ["Issue GR & invoice", "Create service acceptance and draft the invoice."],
+            ].map(([step, hint], index) => (
               <div className="rounded-lg border bg-muted/30 p-4" key={step}>
                 <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
                   {index + 1}
                 </div>
                 <div className="font-medium">{step}</div>
-                <div className="mt-1 text-muted-foreground">Operational data is stored in Sevenfold PostgreSQL.</div>
+                <div className="mt-1 text-muted-foreground">{hint}</div>
               </div>
             ))}
           </div>
@@ -470,8 +571,8 @@ function EmployeeHome({ data }: { data: DashboardData }) {
             <Info label="Current Project" value={assignment.project_id || employee.assigned_project_id || "-"} />
             <Info label="Client" value={assignment.client_id || employee.assigned_client_id || "-"} />
             <Info label="Role" value={assignment.role_title || "-"} />
-            <Info label="Gross Salary" value={money(employee.gross_monthly_salary || contract.gross_monthly_salary)} />
-            <Info label="Net Pay Estimate" value={money(employee.net_pay_estimate)} />
+            <Info label="Gross Salary" value={money(employee.gross_monthly_salary || contract.gross_monthly_salary, employeePayrollCurrency(employee, data.projects))} />
+            <Info label="Net Pay Estimate" value={money(employee.net_pay_estimate, employeePayrollCurrency(employee, data.projects))} />
             <Info label="Contract Period" value={`${employee.contract_start_date || contract.start_date || "-"} - ${employee.contract_end_date || contract.end_date || "-"}`} />
             <Info label="Resource Ready" value={employee.resource_ready_at ? "Ready" : "In progress"} />
           </CardContent>
@@ -482,21 +583,21 @@ function EmployeeHome({ data }: { data: DashboardData }) {
             <CardDescription>Submit interest for available projects. HR/Admin will review the request.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form action={createProjectApplicationAction} className="grid gap-3">
+            <ActionForm action={createProjectApplicationAction} className="grid gap-3">
               <input name="employee_id" type="hidden" value={employee.employee_id || ""} />
               <NativeSelect name="project_id" options={availableProjects} emptyLabel="Select project" required />
               <Input name="role_interest" placeholder="Role interest" />
               <Input name="availability_date" type="date" />
               <Textarea name="notes" placeholder="Notes" />
               <Button type="submit">Apply Project</Button>
-            </form>
+            </ActionForm>
           </CardContent>
         </Card>
       </div>
       <Card>
         <CardHeader>
           <CardTitle>My Status Timeline</CardTitle>
-          <CardDescription>Recent workflow state from backend records.</CardDescription>
+          <CardDescription>Your latest timesheet, overtime, and leave activity.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-3 gap-3 text-sm max-lg:grid-cols-1">
@@ -537,15 +638,15 @@ function ControlPlanePanel({ auditLogs, settings }: { auditLogs: RecordMap[]; se
         <Card>
           <CardHeader>
             <CardTitle>Framework Defaults</CardTitle>
-            <CardDescription>Seed or reset safe defaults from the current business plan. No destructive database operation.</CardDescription>
+            <CardDescription>Load the standard framework defaults (deal types, commodities, risk domains, currencies). Existing settings are preserved.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
-            <form action={seedFrameworkControlPlaneAction}>
+            <ActionForm action={seedFrameworkControlPlaneAction}>
               <Button type="submit">
                 <Settings className="h-4 w-4" />
                 Seed Business Plan Defaults
               </Button>
-            </form>
+            </ActionForm>
             <div className="text-xs text-muted-foreground">Last updated: {config.updatedAt ? formatDateTime(config.updatedAt) : "default preview"}</div>
           </CardContent>
         </Card>
@@ -554,12 +655,12 @@ function ControlPlanePanel({ auditLogs, settings }: { auditLogs: RecordMap[]; se
       <div className="grid grid-cols-3 gap-4 max-xl:grid-cols-2 max-sm:grid-cols-1">
         {[
           ["User Administration", "Create, scope, reset, activate, and soft-delete users."],
-          ["Role & Permission Administration", "Role seed and permission model; detailed editor is scheduled for next control-plane increment."],
+          ["Role & Permission Administration", "Roles and permission assignments used across the workspace."],
           ["Approval Matrix Administration", "Configurable approval thresholds by decision and deal value."],
           ["Framework Settings", "Deal type, commodity, risk domain, currency, and control defaults."],
-          ["Template Management", "Document template references through the Drive/GAS repository adapter."],
+          ["Template Management", "Versioned document templates available across the workspace."],
           ["Framework Versioning", "Versioned control-plane JSON snapshot for reviewed production rollout."],
-          ["Audit Logs", "Every setting mutation writes backend audit logs."],
+          ["Audit Logs", "Every configuration change is recorded in the audit trail."],
         ].map(([title, description]) => (
           <Card key={title}>
             <CardHeader>
@@ -868,15 +969,15 @@ function ControlPlanePanel({ auditLogs, settings }: { auditLogs: RecordMap[]; se
           <Card>
             <CardHeader>
               <CardTitle>Advanced JSON Editor</CardTitle>
-              <CardDescription>Use for bulk edits only. Keep this reviewed before production deployment.</CardDescription>
+              <CardDescription>Advanced bulk editor for the full configuration. Changes are versioned and audited — review carefully before saving.</CardDescription>
             </CardHeader>
             <CardContent>
-              <form action={updateFrameworkControlPlaneJsonAction} className="grid gap-3">
+              <ActionForm action={updateFrameworkControlPlaneJsonAction} className="grid gap-3">
                 <Textarea className="min-h-96 font-mono text-xs" name="framework_json" defaultValue={JSON.stringify(config, null, 2)} />
                 <Input name="reason" placeholder="Reason for change" required />
                 <Input name="approval_reference" placeholder="Approval reference, if applicable" />
                 <Button type="submit">Save JSON</Button>
-              </form>
+              </ActionForm>
             </CardContent>
           </Card>
         </TabsContent>
@@ -934,7 +1035,7 @@ function FrameworkAddForm({ group, fields }: { group: string; fields: string[] }
         <CardDescription>Additive update only. Existing rows are preserved.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form action={addFrameworkItemAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+        <ActionForm action={addFrameworkItemAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
           <input name="group" type="hidden" value={group} />
           {fields.map((field) => (
             <Input key={field} name={field} placeholder={field.replace(/_/g, " ")} defaultValue={field === "status" ? "active" : ""} required={["name", "code", "decision", "role", "reason"].includes(field)} />
@@ -943,14 +1044,14 @@ function FrameworkAddForm({ group, fields }: { group: string; fields: string[] }
             <Plus className="h-4 w-4" />
             Add
           </Button>
-        </form>
+        </ActionForm>
       </CardContent>
     </Card>
   );
 }
 
 function OpportunityPanel({ data }: { data: DashboardData }) {
-  const analysis = data.opportunity_analysis || { opportunities: [], scenarios: [], commodityLines: [], risks: [], pricingDecisions: [], urgentRisks: [], topExposureRisks: [] };
+  const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
   const opportunityOptions = analysis.opportunities.map((opportunity) => ({
     id: opportunity.opportunity_id,
     label: `${opportunity.opportunity_id} - ${opportunity.customer_name}`,
@@ -958,19 +1059,22 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
   const dealTypes = data.framework_settings?.dealTypes || [];
   const commodityCodes = data.framework_settings?.commodityCodes || [];
   const riskDomains = data.framework_settings?.riskDomains || [];
+  const currencies = frameworkCurrencyOptions(data);
+  const scenarioCurrency = scenarioCurrencyLookup(analysis.scenarios);
+  const opportunityCurrency = opportunityCurrencyLookup(analysis.scenarios);
 
   return (
     <section className="grid gap-5">
-      <div className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
-        <KpiTile label="Opportunities" value={String(analysis.opportunities.length)} />
-        <KpiTile label="Scenarios" value={String(analysis.scenarios.length)} />
-        <KpiTile label="Commodity Lines" value={String(analysis.commodityLines.length)} />
-        <KpiTile label="Open Risks" value={String(analysis.risks.filter((risk) => risk.status !== "closed").length)} />
-      </div>
+      <MyOpportunityWorklist data={data} />
 
       <div className="grid grid-cols-2 gap-5 max-xl:grid-cols-1">
         <RiskSummaryCard title="Top 3 Urgent Risks" rows={analysis.urgentRisks} valueKey="predicted_occurrence_date" />
-        <RiskSummaryCard title="Top 3 Exposure Risks" rows={analysis.topExposureRisks} valueKey="exposure_after_mitigation" />
+        <RiskSummaryCard
+          title="Top 3 Exposure Risks"
+          rows={analysis.topExposureRisks}
+          valueKey="exposure_after_mitigation"
+          formatValue={(risk) => money(risk.exposure_after_mitigation, opportunityCurrency.get(risk.opportunity_id))}
+        />
       </div>
 
       <Tabs defaultValue="opportunities">
@@ -985,21 +1089,20 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
 
         <TabsContent value="opportunities">
           <CommandBar exportHref="/api/opportunities/export" />
-          <InlineFormPanel title="Create Opportunity ID" toggleLabel="Create">
-            <form action={createOpportunityAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
-              <Input name="opportunity_id" placeholder="Opportunity ID optional" />
+          <InlineFormPanel title="Create Opportunity" description="New opportunities always start in Draft. Move them forward with workflow actions on the opportunity page." toggleLabel="Create">
+            <ActionForm action={createOpportunityAction} successMessage="Opportunity created." className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+              <Input name="opportunity_id" placeholder="Opportunity ID (leave blank to auto-generate)" />
               <Input name="customer_name" placeholder="Customer name" required />
-              <Input name="owner" placeholder="Owner / Account Manager" />
-              <Input name="solution_architect" placeholder="Solution Architect" />
+              <TeamMemberInput name="owner" placeholder="Account Manager (owner)" directory={data.team_directory} roles={["ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]} />
+              <TeamMemberInput name="solution_architect" placeholder="Solution Architect" directory={data.team_directory} roles={["ROLE_SOLUTION_ARCHITECT"]} />
               <Select name="deal_type" required>
                 <SelectTrigger><SelectValue placeholder="Deal type" /></SelectTrigger>
                 <SelectContent>{dealTypes.map((deal) => <SelectItem key={deal.id} value={deal.name}>{deal.name}</SelectItem>)}</SelectContent>
               </Select>
-              <Input name="customer_segment" placeholder="Customer segment" />
-              <NativeSelect name="opportunity_status" defaultValue="draft" options={OPPORTUNITY_STATUS_OPTIONS} required />
-              <Textarea className="xl:col-span-4" name="scope_summary" placeholder="Scope summary" />
+              <Input name="customer_segment" placeholder="Customer segment, e.g. Telecom Operator" />
+              <Textarea className="xl:col-span-4" name="scope_summary" placeholder="Scope summary — what is being proposed and for which sites/services" />
               <Button className="xl:col-span-4" type="submit"><Plus className="h-4 w-4" /> Create Opportunity</Button>
-            </form>
+            </ActionForm>
           </InlineFormPanel>
           <DataTable
             headers={["Opportunity", "Customer", "Deal", "Status", "Framework", "Owner", "Commercial Scenario", "Action"]}
@@ -1013,14 +1116,14 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
 
         <TabsContent value="scenarios">
           <InlineFormPanel title="Create Proposal Scenario" toggleLabel="Create">
-            <form action={createProposalScenarioAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createProposalScenarioAction} successMessage="Proposal scenario created." className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <OpportunitySelect opportunities={opportunityOptions} />
-              <Input name="scenario_id" placeholder="Scenario ID optional" />
+              <Input name="scenario_id" placeholder="Scenario ID (leave blank to auto-generate)" />
               <Input name="scenario_name" placeholder="Scenario name" required />
-              <Input name="currency" defaultValue="USD" placeholder="Currency" />
+              <NativeSelect name="currency" defaultValue="USD" options={currencies} emptyLabel="Scenario currency" required />
               <Textarea className="xl:col-span-4" name="description" placeholder="Scenario description" />
               <Button className="xl:col-span-4" type="submit"><Plus className="h-4 w-4" /> Create Scenario</Button>
-            </form>
+            </ActionForm>
           </InlineFormPanel>
           <DataTable
             headers={["Opportunity", "Scenario", "Name", "Currency", "Cost", "Price", "Margin", "Status", "Action"]}
@@ -1032,7 +1135,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
 
         <TabsContent value="commodities">
           <OpportunityFormCard title="Add Commodity Cost Structure">
-            <form action={createCommodityCostLineAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createCommodityCostLineAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <OpportunitySelect opportunities={opportunityOptions} />
               <Input name="scenario_id" placeholder="Scenario ID" required />
               <Select name="commodity_code" required>
@@ -1048,32 +1151,35 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
               <MoneyInput name="procurement_cost" placeholder="Procurement cost" />
               <MoneyInput name="project_cost" placeholder="Project cost" />
               <Button className="2xl:col-span-5" type="submit"><Plus className="h-4 w-4" /> Add Cost Line</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Opportunity", "Scenario", "Commodity", "Qty", "Unit Cost", "Unit Price", "Resource", "Partner", "Procurement", "Project"]}
             rows={analysis.commodityLines}
             compact
-            render={(line) => (
-              <TableRow key={`${line.opportunity_id}-${line.scenario_id}-${line.commodity_code}-${line.description}`}>
-                <TableCell className="font-mono text-xs">{line.opportunity_id}</TableCell>
-                <TableCell className="font-mono text-xs">{line.scenario_id}</TableCell>
-                <TableCell>{line.commodity_code}</TableCell>
-                <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(line.unit_cost)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(line.unit_price)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(line.resource_cost)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(line.partner_cost)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(line.procurement_cost)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(line.project_cost)}</TableCell>
-              </TableRow>
-            )}
+            render={(line) => {
+              const currency = scenarioCurrency.get(`${line.opportunity_id}::${line.scenario_id}`);
+              return (
+                <TableRow key={`${line.opportunity_id}-${line.scenario_id}-${line.commodity_code}-${line.description}`}>
+                  <TableCell className="font-mono text-xs">{line.opportunity_id}</TableCell>
+                  <TableCell className="font-mono text-xs">{line.scenario_id}</TableCell>
+                  <TableCell>{line.commodity_code}</TableCell>
+                  <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(line.unit_cost, currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(line.unit_price, currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(line.resource_cost, currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(line.partner_cost, currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(line.procurement_cost, currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(line.project_cost, currency)}</TableCell>
+                </TableRow>
+              );
+            }}
           />
         </TabsContent>
 
         <TabsContent value="risks">
           <OpportunityFormCard title="Add Risk Register Entry">
-            <form action={createOpportunityRiskAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createOpportunityRiskAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <OpportunitySelect opportunities={opportunityOptions} />
               <Input name="risk_id" placeholder="Risk ID optional" />
               <Input name="risk_title" placeholder="Risk title" required />
@@ -1096,7 +1202,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
               <Input name="status" defaultValue="open" placeholder="Status" />
               <Textarea className="2xl:col-span-5" name="mitigation_plan" placeholder="Mitigation plan" />
               <Button className="2xl:col-span-5" type="submit"><Plus className="h-4 w-4" /> Add Risk</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Opportunity", "Risk", "Domain", "Commodity", "Probability", "Impact", "Exposure After", "Occurrence", "Owner", "Status"]}
@@ -1109,8 +1215,8 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
                 <TableCell>{risk.risk_domain}</TableCell>
                 <TableCell>{risk.linked_commodity || "-"}</TableCell>
                 <TableCell className="text-right tabular-nums">{risk.probability || "-"}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(risk.impact)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(risk.exposure_after_mitigation)}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(risk.impact, opportunityCurrency.get(risk.opportunity_id))}</TableCell>
+                <TableCell className="text-right tabular-nums">{money(risk.exposure_after_mitigation, opportunityCurrency.get(risk.opportunity_id))}</TableCell>
                 <TableCell>{risk.predicted_occurrence_date || "-"}</TableCell>
                 <TableCell>{risk.risk_owner || "-"}</TableCell>
                 <TableCell><OpportunityStatusBadge value={risk.status} /></TableCell>
@@ -1121,7 +1227,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
 
         <TabsContent value="pricing">
           <OpportunityFormCard title="Pricing Structure Decision">
-            <form action={createPricingDecisionAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createPricingDecisionAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <OpportunitySelect opportunities={opportunityOptions} />
               <Input name="scenario_id" placeholder="Scenario ID" />
               <Input name="decision" placeholder="Decision, e.g. SELECT_SCENARIO_A" required />
@@ -1135,7 +1241,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
               </Select>
               <Textarea className="xl:col-span-4" name="comment" placeholder="Decision comment" />
               <Button className="xl:col-span-4" type="submit">Save Pricing Decision</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <ControlPlaneTable headers={["Opportunity", "Scenario", "Decision", "Comment", "Status"]} rows={analysis.pricingDecisions} compact />
         </TabsContent>
@@ -1143,7 +1249,7 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
         <TabsContent value="reuse">
           <div className="grid grid-cols-2 gap-5 max-xl:grid-cols-1">
             <OpportunityFormCard title="Reuse Opportunity">
-              <form action={cloneOpportunityAction} className="grid gap-3">
+              <ActionForm action={cloneOpportunityAction} className="grid gap-3">
                 <Select name="source_opportunity_id" required>
                   <SelectTrigger><SelectValue placeholder="Source opportunity" /></SelectTrigger>
                   <SelectContent>{opportunityOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent>
@@ -1151,12 +1257,12 @@ function OpportunityPanel({ data }: { data: DashboardData }) {
                 <Input name="new_opportunity_id" placeholder="New Opportunity ID optional" />
                 <Input name="customer_name" placeholder="New customer name optional" />
                 <Button type="submit">Clone Into Draft</Button>
-              </form>
+              </ActionForm>
             </OpportunityFormCard>
             <Card>
               <CardHeader>
                 <CardTitle>Export to Excel</CardTitle>
-                <CardDescription>On-demand export only. No background generation and no AI call.</CardDescription>
+                <CardDescription>Download the current opportunity analysis as an Excel workbook.</CardDescription>
               </CardHeader>
               <CardContent>
                 <Button asChild>
@@ -1183,6 +1289,129 @@ function SectionBlock({ title, count, children }: { title: string; count?: numbe
       {children}
     </div>
   );
+}
+
+/**
+ * Responsibility-focused worklist: shows the opportunities the signed-in user owns or
+ * architects (with their pending next step), instead of vanity totals like "number of
+ * commodity lines". A compact portfolio-by-status strip keeps the overview.
+ */
+function MyOpportunityWorklist({ data }: { data: DashboardData }) {
+  const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
+  const me = [data.user?.full_name, data.user?.email].filter(Boolean).map((value) => String(value).toLowerCase());
+  const mine = analysis.opportunities.filter((opportunity) =>
+    me.some((identity) =>
+      String(opportunity.owner || "").toLowerCase().includes(identity) ||
+      String(opportunity.solution_architect || "").toLowerCase().includes(identity),
+    ),
+  );
+  const statusCounts = analysis.opportunities.reduce((map, opportunity) => {
+    map.set(opportunity.opportunity_status, (map.get(opportunity.opportunity_status) || 0) + 1);
+    return map;
+  }, new Map<string, number>());
+
+  return (
+    <div className="grid grid-cols-[1.4fr_0.6fr] gap-5 max-xl:grid-cols-1">
+      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]">
+        <CardHeader>
+          <CardTitle className="text-base">My Opportunities</CardTitle>
+          <CardDescription>Deals you own or architect, with the next step for each.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-2">
+          {mine.length === 0 && (
+            <div className="text-sm text-muted-foreground">
+              Nothing is assigned to you yet. Opportunities where you are the Account Manager or Solution Architect appear here automatically.
+            </div>
+          )}
+          {mine.slice(0, 6).map((opportunity) => (
+            <Link
+              key={opportunity.opportunity_id}
+              href={`?section=opportunity&opportunityId=${encodeURIComponent(opportunity.opportunity_id)}`}
+              className="rounded-md border p-3 transition-colors hover:bg-muted/40"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium">{opportunity.customer_name}</div>
+                <OpportunityStatusBadge value={OPPORTUNITY_STATUS_LABELS[opportunity.opportunity_status] || opportunity.opportunity_status} />
+              </div>
+              <div className="mt-0.5 font-mono text-xs text-muted-foreground">{opportunity.opportunity_id} · {opportunity.deal_type || "-"}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{OPPORTUNITY_NEXT_STEP[opportunity.opportunity_status] || ""}</div>
+            </Link>
+          ))}
+        </CardContent>
+      </Card>
+      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]">
+        <CardHeader>
+          <CardTitle className="text-base">Portfolio by Status</CardTitle>
+          <CardDescription>All opportunities in your organization.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-2">
+          {["draft", "submitted", "pricing_approved", "ready_for_cashflow", "approved"].map((status) => (
+            <div key={status} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+              <span>{OPPORTUNITY_STATUS_LABELS[status]}</span>
+              <span className="font-semibold tabular-nums">{statusCounts.get(status) || 0}</span>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * Free-text input backed by a datalist of registered team members, so owners and
+ * architects are picked from existing platform users instead of retyped — while never
+ * blocking entry when the right person has no account yet.
+ */
+function TeamMemberInput({
+  name,
+  placeholder,
+  directory,
+  roles,
+  defaultValue,
+}: {
+  name: string;
+  placeholder: string;
+  directory: DashboardData["team_directory"];
+  roles: string[];
+  defaultValue?: string;
+}) {
+  const listId = `team-list-${name}`;
+  const preferred = peopleForRoles(directory, roles);
+  const options = preferred.length > 0 ? preferred : directory;
+  return (
+    <>
+      <Input name={name} placeholder={placeholder} defaultValue={defaultValue} list={listId} autoComplete="off" />
+      <datalist id={listId}>
+        {options.map((person) => <option key={person.id} value={person.id}>{person.label}</option>)}
+      </datalist>
+    </>
+  );
+}
+
+/** Currencies registered in Admin framework settings, merged with project currencies. */
+function frameworkCurrencyOptions(data: DashboardData) {
+  const registered = (data.framework_settings?.currencies || [])
+    .filter((currency) => currency.status !== "inactive")
+    .map((currency) => currency.code);
+  const fromProjects = data.projects.map((project) => project.currency);
+  const codes = uniqueCurrencies([...registered, ...fromProjects]);
+  return (codes.length ? codes : ["USD"]).map((code) => ({ id: code, label: code }));
+}
+
+/** Map "OPP::SCN" -> registered scenario currency, for commodity line displays. */
+function scenarioCurrencyLookup(scenarios: RecordMap[]) {
+  return new Map(scenarios.map((scenario) => [`${scenario.opportunity_id}::${scenario.scenario_id}`, scenario.currency]));
+}
+
+/** Opportunity -> currency of its commercial (selected) scenario, else first scenario. */
+function opportunityCurrencyLookup(scenarios: RecordMap[]) {
+  const map = new Map<string, string>();
+  scenarios.forEach((scenario) => {
+    if (scenario.status === "selected" || !map.has(scenario.opportunity_id)) {
+      map.set(scenario.opportunity_id, scenario.currency);
+    }
+  });
+  return map;
 }
 
 function OpportunityDetailPage({ opportunityId, data }: { opportunityId: string; data: DashboardData }) {
@@ -1212,29 +1441,41 @@ function OpportunityDetailPage({ opportunityId, data }: { opportunityId: string;
   const sdsRecords = (analysis.sdsRecords || []).filter((row) => row.opportunity_id === opportunityId);
   const sdoaRecords = (analysis.sdoaRecords || []).filter((row) => row.opportunity_id === opportunityId);
 
+  const scenarioCurrency = scenarioCurrencyLookup(analysis.scenarios);
+  const commercialScenario = scenarios.find((row) => row.status === "selected") || scenarios[0];
+  const opportunityCurrency = commercialScenario?.currency || "";
+  const openRisks = risks.filter((risk) => risk.status !== "closed");
+  const status = opportunity.opportunity_status;
+
   return (
-    <section className="grid gap-6">
+    <section className="grid gap-5">
       <Link href="?section=opportunity" className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-4 w-4" /> Back to Opportunities
       </Link>
 
+      {/* Executive summary header */}
       <Card>
         <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle className="font-mono text-base">{opportunity.opportunity_id}</CardTitle>
-              <CardDescription>{opportunity.customer_name} - {opportunity.deal_type}</CardDescription>
+              <CardTitle className="text-lg">{opportunity.customer_name}</CardTitle>
+              <CardDescription className="font-mono">{opportunity.opportunity_id} · {opportunity.deal_type || "Deal type not set"} deal</CardDescription>
             </div>
-            <StatusBadge value={opportunity.opportunity_status} />
+            <div className="flex items-center gap-2">
+              <OpportunityStatusBadge value={OPPORTUNITY_STATUS_LABELS[status] || status} />
+              <OpportunityEditDialog opportunity={opportunity} dealTypes={dealTypes} />
+            </div>
           </div>
         </CardHeader>
         <CardContent className="grid gap-4">
           <div className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
-            <Info label="Owner" value={opportunity.owner} />
+            <Info label="Proposed Value" value={commercialScenario?.total_price ? money(commercialScenario.total_price, opportunityCurrency) : "Not costed yet"} />
+            <Info label="Gross Margin" value={commercialScenario?.gross_margin ? formatRatioAsPercent(commercialScenario.gross_margin) : "-"} />
+            <Info label="Account Manager" value={opportunity.owner} />
             <Info label="Solution Architect" value={opportunity.solution_architect} />
-            <Info label="Framework Version" value={opportunity.framework_version} />
-            <Info label="Commercial Scenario" value={opportunity.commercial_scenario} />
             <Info label="Customer Segment" value={opportunity.customer_segment} />
+            <Info label="Commercial Scenario" value={opportunity.commercial_scenario} />
+            <Info label="Framework Version" value={opportunity.framework_version} />
             <Info label="Created" value={opportunity.created_at?.slice(0, 10)} />
           </div>
           {opportunity.scope_summary && (
@@ -1243,109 +1484,179 @@ function OpportunityDetailPage({ opportunityId, data }: { opportunityId: string;
               <p className="mt-1">{opportunity.scope_summary}</p>
             </div>
           )}
-          <OpportunityEditPanel opportunity={opportunity} dealTypes={dealTypes} />
+          <OpportunityWorkflowActions opportunity={opportunity} role={data.user?.role_id as RoleId} />
         </CardContent>
       </Card>
 
-      <SectionBlock title="Scenarios" count={scenarios.length}>
-        <DataTable
-          headers={["Opportunity", "Scenario", "Name", "Currency", "Cost", "Price", "Margin", "Status", "Action"]}
-          rows={scenarios}
-          compact
-          render={(scenario) => <ScenarioTableRow key={`${scenario.opportunity_id}-${scenario.scenario_id}`} scenario={scenario} />}
-        />
-      </SectionBlock>
+      <Tabs defaultValue="commercial">
+        <TabsList className="flex flex-wrap">
+          <TabsTrigger value="commercial">Scope &amp; Commercial ({scenarios.length})</TabsTrigger>
+          <TabsTrigger value="risks">Risks ({openRisks.length} open)</TabsTrigger>
+          <TabsTrigger value="cashflow">Cashflow ({cashflowOptions.length})</TabsTrigger>
+          <TabsTrigger value="governance">Approvals &amp; History</TabsTrigger>
+        </TabsList>
 
-      <SectionBlock title="Commodity Cost Lines" count={commodityLines.length}>
-        <DataTable
-          headers={["Scenario", "Commodity", "Qty", "Unit Cost", "Unit Price", "Resource", "Partner", "Procurement", "Project"]}
-          rows={commodityLines}
-          compact
-          render={(line) => (
-            <TableRow key={`${line.scenario_id}-${line.commodity_code}-${line.description}`}>
-              <TableCell className="font-mono text-xs">{line.scenario_id}</TableCell>
-              <TableCell>{line.commodity_code}</TableCell>
-              <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(line.unit_cost)}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(line.unit_price)}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(line.resource_cost)}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(line.partner_cost)}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(line.procurement_cost)}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(line.project_cost)}</TableCell>
-            </TableRow>
-          )}
-        />
-      </SectionBlock>
+        <TabsContent value="commercial" className="grid gap-5">
+          <SectionBlock title="Proposal Scenarios" count={scenarios.length}>
+            {scenarios.length === 0 && (
+              <EmptyState title="No proposal scenarios yet" description="Create a scenario in the Scenarios tab of Opportunity Analysis — it is required before this opportunity can be submitted for review." />
+            )}
+            {scenarios.length > 0 && (
+              <DataTable
+                headers={["Opportunity", "Scenario", "Name", "Currency", "Cost", "Price", "Margin", "Status", "Action"]}
+                rows={scenarios}
+                compact
+                render={(scenario) => <ScenarioTableRow key={`${scenario.opportunity_id}-${scenario.scenario_id}`} scenario={scenario} />}
+              />
+            )}
+          </SectionBlock>
+          <SectionBlock title="Commodity Cost Lines" count={commodityLines.length}>
+            <DataTable
+              headers={["Scenario", "Commodity", "Qty", "Unit Cost", "Unit Price", "Resource", "Partner", "Procurement", "Project"]}
+              rows={commodityLines}
+              compact
+              render={(line) => {
+                const currency = scenarioCurrency.get(`${line.opportunity_id}::${line.scenario_id}`) || opportunityCurrency;
+                return (
+                  <TableRow key={`${line.scenario_id}-${line.commodity_code}-${line.description}`}>
+                    <TableCell className="font-mono text-xs">{line.scenario_id}</TableCell>
+                    <TableCell>{line.commodity_code}</TableCell>
+                    <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.unit_cost, currency)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.unit_price, currency)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.resource_cost, currency)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.partner_cost, currency)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.procurement_cost, currency)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.project_cost, currency)}</TableCell>
+                  </TableRow>
+                );
+              }}
+            />
+          </SectionBlock>
+          <SectionBlock title="Pricing Decisions" count={pricingDecisions.length}>
+            <ControlPlaneTable headers={["Opportunity", "Scenario", "Decision", "Comment", "Status"]} rows={pricingDecisions} compact />
+          </SectionBlock>
+        </TabsContent>
 
-      <SectionBlock title="Risk Register" count={risks.length}>
-        <DataTable
-          headers={["Risk", "Domain", "Commodity", "Probability", "Impact", "Exposure After", "Occurrence", "Owner", "Status"]}
-          rows={risks}
-          compact
-          render={(risk) => (
-            <TableRow key={risk.risk_id}>
-              <TableCell>{risk.risk_title}</TableCell>
-              <TableCell>{risk.risk_domain}</TableCell>
-              <TableCell>{risk.linked_commodity || "-"}</TableCell>
-              <TableCell className="text-right tabular-nums">{risk.probability || "-"}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(risk.impact)}</TableCell>
-              <TableCell className="text-right tabular-nums">{money(risk.exposure_after_mitigation)}</TableCell>
-              <TableCell>{risk.predicted_occurrence_date || "-"}</TableCell>
-              <TableCell>{risk.risk_owner || "-"}</TableCell>
-              <TableCell><OpportunityStatusBadge value={risk.status} /></TableCell>
-            </TableRow>
-          )}
-        />
-      </SectionBlock>
+        <TabsContent value="risks">
+          <SectionBlock title="Risk Register" count={risks.length}>
+            <DataTable
+              headers={["Risk", "Domain", "Commodity", "Probability", "Impact", "Exposure After", "Occurrence", "Owner", "Status"]}
+              rows={risks}
+              compact
+              render={(risk) => (
+                <TableRow key={risk.risk_id}>
+                  <TableCell>{risk.risk_title}</TableCell>
+                  <TableCell>{risk.risk_domain}</TableCell>
+                  <TableCell>{risk.linked_commodity || "-"}</TableCell>
+                  <TableCell className="text-right tabular-nums">{risk.probability || "-"}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(risk.impact, opportunityCurrency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(risk.exposure_after_mitigation, opportunityCurrency)}</TableCell>
+                  <TableCell>{risk.predicted_occurrence_date || "-"}</TableCell>
+                  <TableCell>{risk.risk_owner || "-"}</TableCell>
+                  <TableCell><OpportunityStatusBadge value={risk.status} /></TableCell>
+                </TableRow>
+              )}
+            />
+          </SectionBlock>
+        </TabsContent>
 
-      <SectionBlock title="Pricing Decisions" count={pricingDecisions.length}>
-        <ControlPlaneTable headers={["Opportunity", "Scenario", "Decision", "Comment", "Status"]} rows={pricingDecisions} compact />
-      </SectionBlock>
+        <TabsContent value="cashflow" className="grid gap-4">
+          {cashflowOptions.length > 1 && <CashflowOptionComparison options={cashflowOptions} />}
+          <SectionBlock title="Cashflow Options" count={cashflowOptions.length}>
+            {cashflowOptions.length === 0 ? (
+              <EmptyState title="No cashflow options yet" description="Once pricing is approved and released, the Commercial Manager models options under Cashflow Analysis." />
+            ) : (
+              <DataTable
+                headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Trend", "Approval", "Action"]}
+                rows={cashflowOptions}
+                compact
+                render={(option) => <CashflowOptionTableRow key={`${option.opportunity_id}-${option.option_id}`} option={option} compact={false} />}
+              />
+            )}
+          </SectionBlock>
+        </TabsContent>
 
-      <SectionBlock title="Cashflow Options" count={cashflowOptions.length}>
-        {cashflowOptions.length > 1 && <CashflowOptionComparison options={cashflowOptions} />}
-        <DataTable
-          headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Trend", "Approval", "Action"]}
-          rows={cashflowOptions}
-          compact
-          render={(option) => <CashflowOptionTableRow key={`${option.opportunity_id}-${option.option_id}`} option={option} compact={false} />}
-        />
-      </SectionBlock>
-
-      {(sdsRecords.length > 0 || sdoaRecords.length > 0) && (
-        <SectionBlock title="Sales Decision & Order Acknowledgement History">
-          <div className="grid gap-4">
-            {sdsRecords.length > 0 && (
+        <TabsContent value="governance" className="grid gap-4">
+          <Alert>
+            <AlertTitle>Next step</AlertTitle>
+            <AlertDescription>{OPPORTUNITY_NEXT_STEP[status] || "Review the record history below."}</AlertDescription>
+          </Alert>
+          <SectionBlock title="Sales Decision for Submission (SDS)" count={sdsRecords.length}>
+            {sdsRecords.length === 0 ? (
+              <EmptyState title="No SDS yet" description="After final opportunity approval, create the SDS under Sales Decision Submission for Sponsor sign-off." />
+            ) : (
               <ControlPlaneTable compact headers={["SDS", "Scenario", "Cashflow", "Decision", "Approver"]} rows={sdsRecords.map((row) => ({
                 sds_id: row.sds_id, selected_scenario: row.selected_scenario, selected_cashflow: row.selected_cashflow, decision: row.decision, approver: row.approver,
               }))} />
             )}
-            {sdoaRecords.length > 0 && (
+          </SectionBlock>
+          <SectionBlock title="Order Acknowledgement (SDOA)" count={sdoaRecords.length}>
+            {sdoaRecords.length === 0 ? (
+              <EmptyState title="No SDOA yet" description="When the customer PO or contract arrives, record it under Order Acknowledgement to compare it against the approved SDS baseline." />
+            ) : (
               <ControlPlaneTable compact headers={["SDOA", "PO Number", "Outcome", "Sponsor"]} rows={sdoaRecords.map((row) => ({
                 sdoa_id: row.sdoa_id, received_po_number: row.received_po_number, outcome: row.outcome, sponsor: row.sponsor,
               }))} />
             )}
-          </div>
-        </SectionBlock>
-      )}
+          </SectionBlock>
+        </TabsContent>
+      </Tabs>
     </section>
   );
 }
 
-function OpportunityEditPanel({ opportunity, dealTypes }: { opportunity: RecordMap; dealTypes: { id: string; name: string }[] }) {
-  const [open, setOpen] = useState(false);
+/** Explicit lifecycle actions — the only way opportunity status changes in the UI. */
+function OpportunityWorkflowActions({ opportunity, role }: { opportunity: RecordMap; role: RoleId }) {
+  const status = opportunity.opportunity_status;
+  const transitions = availableOpportunityTransitions(status, role);
   return (
-    <div>
-      <Button type="button" variant="outline" onClick={() => setOpen((value) => !value)}>
-        {open ? <ChevronUp className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
-        {open ? "Close" : "Edit Opportunity"}
-      </Button>
-      {open && (
-        <div className="mt-4 border-t pt-4">
-          <OpportunityEditForm opportunity={opportunity} dealTypes={dealTypes} />
+    <div className="rounded-md border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm">
+          <span className="font-medium">Next step: </span>
+          <span className="text-muted-foreground">{OPPORTUNITY_NEXT_STEP[status] || "No further workflow steps."}</span>
         </div>
-      )}
+        {transitions.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {transitions.map((transition) => (
+              <ActionForm
+                key={transition.action}
+                action={transitionOpportunityStatusAction}
+                confirmMessage={transition.confirm}
+                successMessage={`Opportunity moved to ${OPPORTUNITY_STATUS_LABELS[transition.to] || transition.to}.`}
+              >
+                <input type="hidden" name="opportunity_id" value={opportunity.opportunity_id} />
+                <input type="hidden" name="workflow_action" value={transition.action} />
+                <Button size="sm" type="submit" variant={transition.action === "return_to_draft" ? "outline" : "default"} title={transition.description}>
+                  {transition.label}
+                </Button>
+              </ActionForm>
+            ))}
+          </div>
+        )}
+        {status === "approved" && transitions.length === 0 && (
+          <Badge variant="success">Commercially approved — continue in Sales Decision Submission</Badge>
+        )}
+      </div>
     </div>
+  );
+}
+
+function OpportunityEditDialog({ opportunity, dealTypes }: { opportunity: RecordMap; dealTypes: { id: string; name: string }[] }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline"><Pencil className="h-4 w-4" /> Edit</Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Edit opportunity</DialogTitle>
+          <DialogDescription>Deal context only. Status moves through the workflow actions, not through editing.</DialogDescription>
+        </DialogHeader>
+        <OpportunityEditForm opportunity={opportunity} dealTypes={dealTypes} />
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1356,26 +1667,23 @@ function OpportunityEditForm({
   opportunity: RecordMap;
   dealTypes: { id: string; name: string }[];
 }) {
-  // No onClick-driven auto-close here: collapsing the row/panel synchronously in the
-  // submit button's onClick would unmount the <form> before the browser's native
-  // submit event fires, silently dropping the server action call entirely (found via
-  // Playwright UAT - see e2e/opportunity-cashflow.spec.ts). The user closes manually
-  // via the Edit/Close toggle once they see the saved values reflected above.
+  // Status is intentionally not editable here: lifecycle changes go through the
+  // explicit workflow actions, which validate entry criteria server-side and write
+  // the audit trail.
   return (
-    <form action={updateOpportunityAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+    <ActionForm action={updateOpportunityAction} successMessage="Opportunity updated." className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
       <input type="hidden" name="opportunity_id" value={opportunity.opportunity_id} />
       <Input name="customer_name" defaultValue={opportunity.customer_name} placeholder="Customer name" required />
-      <Input name="owner" defaultValue={opportunity.owner} placeholder="Owner / Account Manager" />
+      <Input name="owner" defaultValue={opportunity.owner} placeholder="Account Manager (owner)" />
       <Input name="solution_architect" defaultValue={opportunity.solution_architect} placeholder="Solution Architect" />
       <Select name="deal_type" defaultValue={opportunity.deal_type} required>
         <SelectTrigger><SelectValue placeholder="Deal type" /></SelectTrigger>
         <SelectContent>{dealTypes.map((deal) => <SelectItem key={deal.id} value={deal.name}>{deal.name}</SelectItem>)}</SelectContent>
       </Select>
       <Input name="customer_segment" defaultValue={opportunity.customer_segment} placeholder="Customer segment" />
-      <NativeSelect name="opportunity_status" defaultValue={opportunity.opportunity_status} options={OPPORTUNITY_STATUS_OPTIONS} required />
       <Textarea className="xl:col-span-4" name="scope_summary" defaultValue={opportunity.scope_summary} placeholder="Scope summary" />
       <Button className="xl:col-span-4" type="submit">Save Changes</Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -1387,24 +1695,24 @@ function OpportunityTableRow({
   dealTypes: { id: string; name: string }[];
 }) {
   const [editing, setEditing] = useState(false);
+  const router = useRouter();
+  const detailHref = `?section=opportunity&opportunityId=${encodeURIComponent(opportunity.opportunity_id)}`;
   return (
     <>
-      <TableRow>
+      {/* Whole row opens the isolated opportunity detail view. */}
+      <TableRow className="cursor-pointer" onClick={() => router.push(detailHref)}>
         <TableCell className="font-mono text-xs">
-          <Link
-            href={`?section=opportunity&opportunityId=${encodeURIComponent(opportunity.opportunity_id)}`}
-            className="text-[#6264a7] hover:underline"
-          >
+          <Link href={detailHref} className="text-[#6264a7] hover:underline" onClick={(event) => event.stopPropagation()}>
             {opportunity.opportunity_id}
           </Link>
         </TableCell>
         <TableCell>{opportunity.customer_name}</TableCell>
         <TableCell>{opportunity.deal_type}</TableCell>
-        <TableCell><OpportunityStatusBadge value={opportunity.opportunity_status} /></TableCell>
+        <TableCell><OpportunityStatusBadge value={OPPORTUNITY_STATUS_LABELS[opportunity.opportunity_status] || opportunity.opportunity_status} /></TableCell>
         <TableCell>{opportunity.framework_version || "-"}</TableCell>
         <TableCell>{opportunity.owner || "-"}</TableCell>
         <TableCell>{opportunity.commercial_scenario || "-"}</TableCell>
-        <TableCell>
+        <TableCell onClick={(event) => event.stopPropagation()}>
           <Button size="sm" variant="outline" type="button" onClick={() => setEditing((value) => !value)}>
             {editing ? <ChevronUp className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
             {editing ? "Close" : "Edit"}
@@ -1431,9 +1739,9 @@ function ScenarioTableRow({ scenario }: { scenario: RecordMap }) {
         <TableCell className="font-mono text-xs">{scenario.scenario_id}</TableCell>
         <TableCell>{scenario.scenario_name}</TableCell>
         <TableCell>{scenario.currency}</TableCell>
-        <TableCell className="text-right tabular-nums">{money(scenario.total_cost)}</TableCell>
-        <TableCell className="text-right tabular-nums">{money(scenario.total_price)}</TableCell>
-        <TableCell className="text-right tabular-nums">{scenario.gross_margin || "-"}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(scenario.total_cost, scenario.currency)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(scenario.total_price, scenario.currency)}</TableCell>
+        <TableCell className="text-right tabular-nums">{formatRatioAsPercent(scenario.gross_margin)}</TableCell>
         <TableCell><OpportunityStatusBadge value={scenario.status} /></TableCell>
         <TableCell>
           <Button size="sm" variant="outline" type="button" onClick={() => setEditing((value) => !value)}>
@@ -1445,14 +1753,14 @@ function ScenarioTableRow({ scenario }: { scenario: RecordMap }) {
       {editing && (
         <TableRow>
           <TableCell colSpan={9} className="bg-muted/30 p-4">
-            <form action={updateProposalScenarioAction} className="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={updateProposalScenarioAction} className="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <input type="hidden" name="opportunity_id" value={scenario.opportunity_id} />
               <input type="hidden" name="scenario_id" value={scenario.scenario_id} />
               <Input name="scenario_name" defaultValue={scenario.scenario_name} placeholder="Scenario name" required />
               <Input name="currency" defaultValue={scenario.currency} placeholder="Currency" />
               <Textarea className="lg:col-span-3" name="description" defaultValue={scenario.description} placeholder="Scenario description" />
               <Button className="lg:col-span-3" type="submit">Save Changes</Button>
-            </form>
+            </ActionForm>
           </TableCell>
         </TableRow>
       )}
@@ -1466,7 +1774,7 @@ function OpportunityFormCard({ title, children }: { title: string; children: Rea
       <CardContent className="flex items-center justify-between gap-4 p-4">
         <div>
           <div className="font-medium">{title}</div>
-          <div className="text-sm text-muted-foreground">Open a controlled form, then save or cancel.</div>
+          <div className="text-sm text-muted-foreground">Your entries are protected until you save or cancel.</div>
         </div>
         <Dialog>
           <DialogTrigger asChild>
@@ -1577,7 +1885,7 @@ function OpportunitySelect({ opportunities }: { opportunities: { id: string; lab
   );
 }
 
-function RiskSummaryCard({ title, rows, valueKey }: { title: string; rows: RecordMap[]; valueKey: string }) {
+function RiskSummaryCard({ title, rows, valueKey, formatValue }: { title: string; rows: RecordMap[]; valueKey: string; formatValue?: (risk: RecordMap) => string }) {
   return (
     <Card>
       <CardHeader>
@@ -1588,11 +1896,11 @@ function RiskSummaryCard({ title, rows, valueKey }: { title: string; rows: Recor
           <div className="rounded-md border p-3" key={`${risk.opportunity_id}-${risk.risk_id}-${valueKey}`}>
             <div className="flex items-center justify-between gap-3">
               <div className="font-medium">{risk.risk_title}</div>
-              <Badge variant="outline">{risk[valueKey] || "-"}</Badge>
+              <Badge variant="outline">{(formatValue ? formatValue(risk) : risk[valueKey]) || "-"}</Badge>
             </div>
             <div className="mt-1 text-xs text-muted-foreground">{risk.opportunity_id} / {risk.risk_domain} / {risk.linked_commodity || "No commodity"}</div>
           </div>
-        )) : <EmptyState title="No risks yet" description="Risk register entries will appear here." />}
+        )) : <EmptyState title="No risks yet" description="Register risks per opportunity to see the most urgent and highest-exposure items here." />}
       </CardContent>
     </Card>
   );
@@ -1602,24 +1910,25 @@ function CashflowPanel({ data }: { data: DashboardData }) {
   const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
   const approvedOpportunities = analysis.opportunities.filter((opportunity) => ["approved", "ready_for_cashflow", "pricing_approved", "submitted"].includes(opportunity.opportunity_status));
   const opportunityOptions = approvedOpportunities.map((opportunity) => ({ id: opportunity.opportunity_id, label: `${opportunity.opportunity_id} - ${opportunity.customer_name}` }));
+  const currencies = frameworkCurrencyOptions(data);
 
   return (
     <section className="grid gap-5">
       <div className="grid grid-cols-3 gap-3 max-lg:grid-cols-1">
-        <KpiTile label="Approved Opportunities" value={String(approvedOpportunities.length)} />
+        <KpiTile label="Eligible Opportunities" value={String(approvedOpportunities.length)} />
         <KpiTile label="Cashflow Options" value={String(analysis.cashflowOptions.length)} />
         <KpiTile label="Approved Options" value={String(analysis.cashflowOptions.filter((option) => option.status === "approved").length)} />
       </div>
       <CommandBar />
       <InlineFormPanel title="Create Cashflow Option" toggleLabel="Create">
-        <form action={createCashflowOptionAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+        <ActionForm action={createCashflowOptionAction} successMessage="Cashflow option created." className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
           <Select name="opportunity_id" required>
             <SelectTrigger><SelectValue placeholder="Approved Opportunity ID" /></SelectTrigger>
             <SelectContent>{opportunityOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent>
           </Select>
-          <Input name="option_id" placeholder="Option ID optional" />
+          <Input name="option_id" placeholder="Option ID (leave blank to auto-generate)" />
           <Input name="option_name" placeholder="Option name" required />
-          <Input name="currency" defaultValue="USD" placeholder="Currency" />
+          <NativeSelect name="currency" defaultValue="USD" options={currencies} emptyLabel="Currency" required />
           <Input name="dso_days" defaultValue="30" type="number" placeholder="DSO days" />
           <Input name="payment_terms" placeholder="Payment terms" />
           <Input name="invoice_date" type="date" placeholder="Invoice date" required />
@@ -1642,12 +1951,12 @@ function CashflowPanel({ data }: { data: DashboardData }) {
             </AlertDescription>
           </Alert>
           <Button className="2xl:col-span-5" type="submit"><Plus className="h-4 w-4" /> Create Cashflow Option</Button>
-        </form>
+        </ActionForm>
       </InlineFormPanel>
       <DataTable
         headers={["Opportunity", "Option", "Payment", "Gross", "Discount", "Cash Gap", "Margin", "NPV", "Break-even", "WC Days", "Trend", "Approval", "Action"]}
         rows={analysis.cashflowOptions}
-        render={(option) => <CashflowOptionTableRow key={`${option.opportunity_id}-${option.option_id}`} option={option} />}
+        render={(option) => <CashflowOptionTableRow key={`${option.opportunity_id}-${option.option_id}`} option={option} currencies={currencies} />}
       />
     </section>
   );
@@ -1679,11 +1988,11 @@ function CashflowOptionComparison({ options }: { options: RecordMap[] }) {
               <div className="grid grid-cols-3 gap-2 text-sm">
                 <div>
                   <div className="text-xs text-muted-foreground">Cash Gap</div>
-                  <div className={cn("font-semibold", isBestCashGap && "text-[#6264a7]")}>{money(String(cashGap))}</div>
+                  <div className={cn("font-semibold", isBestCashGap && "text-[#6264a7]")}>{money(String(cashGap), option.currency)}</div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">NPV</div>
-                  <div className={cn("font-semibold", isBestNpv && "text-[#6264a7]")}>{money(String(npv))}</div>
+                  <div className={cn("font-semibold", isBestNpv && "text-[#6264a7]")}>{money(String(npv), option.currency)}</div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">Break-even</div>
@@ -1698,7 +2007,7 @@ function CashflowOptionComparison({ options }: { options: RecordMap[] }) {
   );
 }
 
-function CashflowOptionTableRow({ option, compact = true }: { option: RecordMap; compact?: boolean }) {
+function CashflowOptionTableRow({ option, compact = true, currencies }: { option: RecordMap; compact?: boolean; currencies?: { id: string; label: string }[] }) {
   const [editing, setEditing] = useState(false);
   const isApproved = option.status === "approved";
   return (
@@ -1706,12 +2015,12 @@ function CashflowOptionTableRow({ option, compact = true }: { option: RecordMap;
       <TableRow>
         <TableCell className="font-mono text-xs">{option.opportunity_id}</TableCell>
         <TableCell>{option.option_id} - {option.option_name}</TableCell>
-        <TableCell>{option.payment_terms || option.dso_days}</TableCell>
-        <TableCell className="text-right tabular-nums">{money(option.gross_invoice)}</TableCell>
-        <TableCell className="text-right tabular-nums">{money(option.incentive_discount)}</TableCell>
-        <TableCell className={cn("text-right tabular-nums", Number(option.cash_impact) < 0 && "text-red-600")}>{money(option.cash_impact)}</TableCell>
-        <TableCell className="text-right tabular-nums">{money(option.margin_impact)}</TableCell>
-        <TableCell className="text-right tabular-nums">{money(option.npv)}</TableCell>
+        <TableCell>{option.payment_terms || `${option.dso_days} days`}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.gross_invoice, option.currency)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.incentive_discount, option.currency)}</TableCell>
+        <TableCell className={cn("text-right tabular-nums", Number(option.cash_impact) < 0 && "text-red-600")}>{money(option.cash_impact, option.currency)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.margin_impact, option.currency)}</TableCell>
+        <TableCell className="text-right tabular-nums">{money(option.npv, option.currency)}</TableCell>
         <TableCell>{option.break_even_date || "-"}</TableCell>
         <TableCell className="text-right tabular-nums">{option.working_capital_days || "-"}</TableCell>
         <TableCell className={compact ? "min-w-[140px]" : "min-w-[320px]"}>
@@ -1720,12 +2029,17 @@ function CashflowOptionTableRow({ option, compact = true }: { option: RecordMap;
         <TableCell><OpportunityStatusBadge value={option.status} /></TableCell>
         <TableCell>
           <div className="flex flex-wrap gap-2">
-            <form action={approveCashflowOptionAction} className="flex gap-2">
+            <ActionForm
+              action={approveCashflowOptionAction}
+              className="flex gap-2"
+              confirmMessage={`Approve cashflow option ${option.option_id}? Approved options are locked and become the baseline for SDS.`}
+              successMessage="Cashflow option approved."
+            >
               <input name="opportunity_id" type="hidden" value={option.opportunity_id} />
               <input name="option_id" type="hidden" value={option.option_id} />
               <input name="decision" type="hidden" value="approved" />
               <Button size="sm" type="submit" disabled={isApproved}>Approve</Button>
-            </form>
+            </ActionForm>
             <Button
               size="sm"
               variant="outline"
@@ -1743,11 +2057,15 @@ function CashflowOptionTableRow({ option, compact = true }: { option: RecordMap;
       {editing && !isApproved && (
         <TableRow>
           <TableCell colSpan={13} className="bg-muted/30 p-4">
-            <form action={updateCashflowOptionAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={updateCashflowOptionAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <input type="hidden" name="opportunity_id" value={option.opportunity_id} />
               <input type="hidden" name="option_id" value={option.option_id} />
               <Input name="option_name" defaultValue={option.option_name} placeholder="Option name" required />
-              <Input name="currency" defaultValue={option.currency} placeholder="Currency" />
+              {currencies ? (
+                <NativeSelect name="currency" defaultValue={option.currency} options={currencies} emptyLabel="Currency" />
+              ) : (
+                <Input name="currency" defaultValue={option.currency} placeholder="Currency, e.g. USD" maxLength={3} />
+              )}
               <Input name="dso_days" defaultValue={option.dso_days} type="number" placeholder="DSO days" />
               <Input name="invoice_date" defaultValue={option.invoice_date} type="date" placeholder="Invoice date" required />
               <Input name="cost_date" defaultValue={option.cost_date} type="date" placeholder="Cost incurred date" />
@@ -1757,7 +2075,7 @@ function CashflowOptionTableRow({ option, compact = true }: { option: RecordMap;
               <MoneyInput name="withholding_tax" value={option.withholding_tax} placeholder="Withholding tax" />
               <MoneyInput name="cost_timing_amount" value={option.cost_amount} placeholder="Cost amount" />
               <Button className="2xl:col-span-5" type="submit">Save Changes</Button>
-            </form>
+            </ActionForm>
           </TableCell>
         </TableRow>
       )}
@@ -1783,7 +2101,7 @@ function SdsPanel({ data }: { data: DashboardData }) {
         </Alert>
       )}
       <OpportunityFormCard title="Create Sales Decision for Submission">
-        <form action={createSdsAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+        <ActionForm action={createSdsAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
           <Select name="opportunity_id" required>
             <SelectTrigger><SelectValue placeholder="Opportunity" /></SelectTrigger>
             <SelectContent>{opportunities.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent>
@@ -1810,7 +2128,7 @@ function SdsPanel({ data }: { data: DashboardData }) {
             </AlertDescription>
           </Alert>
           <Button className="xl:col-span-4" type="submit">Create SDS</Button>
-        </form>
+        </ActionForm>
       </OpportunityFormCard>
       <div className="grid gap-4">
         {analysis.sdsRecords.map((sds) => (
@@ -1871,12 +2189,18 @@ function SdsDetailCard({ sds, canDecide }: { sds: RecordMap; canDecide: boolean 
 
 function SdsDecisionButton({ sdsId, decision, label }: { sdsId: string; decision: string; label: string }) {
   return (
-    <form action={decideSdsAction}>
+    <ActionForm
+      action={decideSdsAction}
+      confirmMessage={decision === "approved"
+        ? "Approve this Sales Decision for Submission? The proposal becomes eligible for Order Acknowledgement."
+        : "Reject this Sales Decision for Submission? The team will need to revise and resubmit."}
+      successMessage={`SDS ${decision}.`}
+    >
       <input name="sds_id" type="hidden" value={sdsId} />
       <input name="decision" type="hidden" value={decision} />
       <input name="comments" type="hidden" value={`Sponsor ${decision}`} />
       <Button size="sm" variant={decision === "approved" ? "default" : "outline"} type="submit">{label}</Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -1888,7 +2212,7 @@ function SdoaPanel({ data }: { data: DashboardData }) {
   return (
     <section className="grid gap-5">
       <OpportunityFormCard title="Create Sales Decision Order Acknowledgement">
-        <form action={createSdoaAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+        <ActionForm action={createSdoaAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
           <Select name="opportunity_id" required>
             <SelectTrigger><SelectValue placeholder="Approved SDS Opportunity" /></SelectTrigger>
             <SelectContent>{opportunities.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent>
@@ -1914,7 +2238,7 @@ function SdoaPanel({ data }: { data: DashboardData }) {
           <Input name="contract_legal_delta_received" placeholder="Contract/legal delta" />
           <Textarea className="xl:col-span-4" name="comments" placeholder="Comments" />
           <Button className="xl:col-span-4" type="submit">Create SDOA</Button>
-        </form>
+        </ActionForm>
       </OpportunityFormCard>
       <DataTable
         headers={["SDOA", "Opportunity", "PO", "Outcome", "Sponsor", "Decided", "Comments", "Action"]}
@@ -1944,13 +2268,18 @@ function SdoaPanel({ data }: { data: DashboardData }) {
 }
 
 function SdoaDecisionButton({ sdoaId, decision, label }: { sdoaId: string; decision: string; label: string }) {
+  const confirmations: Record<string, string> = {
+    acknowledged: "Acknowledge this PO/contract? An acknowledged SDOA allows project setup to begin.",
+    returned: "Return this SDOA for clarification with the customer?",
+    rejected: "Reject this PO/contract? This records that the deviation from the SDS baseline is not acceptable.",
+  };
   return (
-    <form action={decideSdoaAction}>
+    <ActionForm action={decideSdoaAction} confirmMessage={confirmations[decision]} successMessage={`SDOA ${decision}.`}>
       <input name="sdoa_id" type="hidden" value={sdoaId} />
       <input name="decision" type="hidden" value={decision} />
       <input name="comments" type="hidden" value={`Sponsor ${decision}`} />
       <Button size="sm" variant={decision === "acknowledged" ? "default" : "outline"} type="submit">{label}</Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -1975,6 +2304,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
   const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
   const approvedSdoa = analysis.sdoaRecords.filter((sdoa) => ["acknowledged", "approved", "accepted"].includes(sdoa.outcome));
   const projectOptions = execution.projects.map((project) => ({ id: project.projectId, label: `${project.projectId} - ${project.customer}` }));
+  const projectCurrencyById = new Map(execution.projects.map((project) => [project.projectId, project.currency || "USD"]));
   const projectCurrencies = execution.projects.map((project) => project.currency || "USD");
   const executionCurrency = uniqueCurrencies(projectCurrencies).length === 1 ? uniqueCurrencies(projectCurrencies)[0] : "";
   const netSales = execution.projects.reduce((sum, project) => sum + Number(project.netSalesEstimate || 0), 0);
@@ -1991,9 +2321,9 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         <MetricCard label="Execution Projects" value={String(execution.projects.length)} />
         <MetricCard label="Gate Requests" value={String(execution.gates.filter((gate) => gate.approvalStatus === "requested").length)} />
         <MetricCard label="Loaded Sites" value={String(execution.sites.length)} />
-        <MetricCard label="Net Sales Estimate" value={money(String(netSales), executionCurrency)} />
+        <MetricCard label="Net Sales Estimate" value={mixedCurrencyCompact(netSales, executionCurrency)} />
         <MetricCard label="Approved CR" value={String(approvedCrCount)} />
-        <MetricCard label="CR Add-on Sales" value={money(String(crAddOnSales), executionCurrency)} />
+        <MetricCard label="CR Add-on Sales" value={mixedCurrencyCompact(crAddOnSales, executionCurrency)} />
         <MetricCard label="Resource Gaps" value={String(resourceGaps)} />
         <MetricCard label="Commercial Pending" value={String(commercialPending)} />
       </div>
@@ -2009,7 +2339,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         </TabsList>
         <TabsContent value="setup">
           <OpportunityFormCard title="Create Project From Approved SDOA">
-            <form action={createExecutionProjectFromSdoaAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createExecutionProjectFromSdoaAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <Input name="project_id" placeholder="Project ID optional" />
               <Select name="linked_sdoa_id" required>
                 <SelectTrigger><SelectValue placeholder="Approved SDOA" /></SelectTrigger>
@@ -2033,7 +2363,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
                 <AlertDescription>Picking the SDOA above determines its linked opportunity, customer name, and approved SDS - and the project always uses the latest active framework version. None of that is re-entered here.</AlertDescription>
               </Alert>
               <Button className="xl:col-span-4" type="submit">Create Execution Project</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Project", "Opportunity", "SDOA", "Customer", "Leader", "Sponsor", "Currency", "Framework", "Net Sales", "CR Budget", "CR Revenue", "Status"]}
@@ -2059,10 +2389,10 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         <TabsContent value="resources">
           <Alert className="mb-4">
             <AlertTitle>Project Execution Tool</AlertTitle>
-            <AlertDescription>Resource Management is a tool inside Project Execution. Rows are capped on dashboard and roll up through governance summaries.</AlertDescription>
+            <AlertDescription>Resource demand is planned per project and rolls up into governance summaries.</AlertDescription>
           </Alert>
           <OpportunityFormCard title="Project Resource Demand">
-            <form action={upsertProjectResourceDemandAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={upsertProjectResourceDemandAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <Select name="project_id" required><SelectTrigger><SelectValue placeholder="Project" /></SelectTrigger><SelectContent>{projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.label}</SelectItem>)}</SelectContent></Select>
               <Input name="project_demand" placeholder="Project demand" />
               <Input name="required_role" placeholder="Required role" required />
@@ -2078,7 +2408,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
               <Input name="resource_risk" placeholder="Resource risk" />
               <Textarea name="replacement_plan" placeholder="Replacement plan" />
               <Button className="2xl:col-span-5" type="submit">Save Resource Demand</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Project", "Demand", "Role", "Skill", "Location", "Dates", "Alloc", "Assigned", "Gap", "Onboarding", "Timesheet", "Risk"]}
@@ -2120,11 +2450,11 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         </TabsContent>
         <TabsContent value="sites">
           <Alert className="mb-4">
-            <AlertTitle>Pagination Guard</AlertTitle>
-            <AlertDescription>The dashboard loads the first 50 site/cluster rows only. Use export for offline review.</AlertDescription>
+            <AlertTitle>Showing recent sites</AlertTitle>
+            <AlertDescription>The 50 most recent site/cluster rows are shown here. Use Export for the complete list.</AlertDescription>
           </Alert>
           <OpportunityFormCard title="Add or Update Site / Cluster">
-            <form action={upsertSiteHandlerAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={upsertSiteHandlerAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <Select name="project_id" required>
                 <SelectTrigger><SelectValue placeholder="Project" /></SelectTrigger>
                 <SelectContent>{projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.label}</SelectItem>)}</SelectContent>
@@ -2142,7 +2472,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
               <Input name="handover_status" placeholder="Handover status" />
               <MoneyInput name="accepted_scope_value" placeholder="Accepted scope value" />
               <Button className="2xl:col-span-5" type="submit">Save Site / Cluster</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Project", "Site", "Scope", "Plan", "Actual", "Progress", "Acceptance", "GR", "Invoice", "Handover", "Net Sales Value"]}
@@ -2159,7 +2489,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
                 <TableCell>{site.goodReceiptDocument || "-"}</TableCell>
                 <TableCell>{site.invoiceStatus}</TableCell>
                 <TableCell>{site.handoverStatus}</TableCell>
-                <TableCell>{money(site.acceptedScopeValue)}</TableCell>
+                <TableCell>{money(site.acceptedScopeValue, projectCurrencyById.get(site.projectId))}</TableCell>
               </TableRow>
             )}
           />
@@ -2167,10 +2497,10 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         <TabsContent value="commercial">
           <Alert className="mb-4">
             <AlertTitle>Workflow Tracking Only</AlertTitle>
-            <AlertDescription>This is commercial document and procurement workflow tracking, not an accounting system.</AlertDescription>
+            <AlertDescription>Track PR/PO, GR, and invoice workflow status per project. Accounting stays in your finance system.</AlertDescription>
           </Alert>
           <OpportunityFormCard title="Commercial Document / Procurement Flow">
-            <form action={upsertCommercialProcurementFlowAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={upsertCommercialProcurementFlowAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <Select name="project_id" required><SelectTrigger><SelectValue placeholder="Project" /></SelectTrigger><SelectContent>{projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.label}</SelectItem>)}</SelectContent></Select>
               <Input name="site_cluster_id" placeholder="Site / cluster" />
               <Input name="accepted_milestone" placeholder="Accepted milestone" />
@@ -2189,7 +2519,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
               <Input name="document_attachment" placeholder="Other document attachment" />
               <NativeSelect name="approval_status" options={["draft", "submitted", "approved", "rejected"]} />
               <Button className="2xl:col-span-5" type="submit">Save Commercial Flow</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Project", "Site", "Milestone", "PR", "PO", "Vendor", "Customer PO", "Invoice", "Invoice Status", "Payment", "GR", "Approval", "Actions"]}
@@ -2216,18 +2546,18 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
         <TabsContent value="imports">
           <div className="grid grid-cols-2 gap-5 max-lg:grid-cols-1">
             <OpportunityFormCard title="Import Site List">
-              <form action={importSiteListExcelAction} className="grid gap-3">
+              <ActionForm action={importSiteListExcelAction} className="grid gap-3">
                 <Input name="file" type="file" accept=".xlsx,.xls,.csv" required />
                 <Button type="submit">Import Site List</Button>
-              </form>
+              </ActionForm>
             </OpportunityFormCard>
             <OpportunityFormCard title="Import Framework Settings">
-              <form action={importFrameworkSettingsExcelAction} className="grid gap-3">
+              <ActionForm action={importFrameworkSettingsExcelAction} className="grid gap-3">
                 <Input name="file" type="file" accept=".xlsx,.xls" required />
                 <Input name="reason" placeholder="Reason" />
                 <Input name="approval_reference" placeholder="Approval reference optional" />
                 <Button type="submit">Admin Import Settings</Button>
-              </form>
+              </ActionForm>
             </OpportunityFormCard>
           </div>
         </TabsContent>
@@ -2235,7 +2565,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
           <Card>
             <CardHeader>
               <CardTitle>Project Execution Export</CardTitle>
-              <CardDescription>On-demand Excel exports. No background load of all sites, resources, or commercial records on dashboard.</CardDescription>
+              <CardDescription>Download Excel workbooks for offline review, reporting, and archiving.</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">
               <Button asChild><a href="/api/project-execution/export" target="_blank" rel="noreferrer">Project Execution Workbook</a></Button>
@@ -2259,7 +2589,7 @@ function GateDialog({ gate }: { gate: RecordMap }) {
           <DialogTitle>{gate.gateName}</DialogTitle>
           <DialogDescription>Project Manager or Program Director requests approval. Sponsor decides transition.</DialogDescription>
         </DialogHeader>
-        <form action={updateProjectGateAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+        <ActionForm action={updateProjectGateAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
           <input name="gate_id" type="hidden" value={gate.gateId} />
           <Textarea name="checklist" defaultValue={gate.checklist} placeholder="Checklist" />
           <Select name="mandatory_checklist_complete" defaultValue={gate.mandatoryChecklistComplete || "false"}>
@@ -2273,7 +2603,7 @@ function GateDialog({ gate }: { gate: RecordMap }) {
           <Textarea name="issues" defaultValue={gate.issues} placeholder="Issues" />
           <Textarea name="risks" defaultValue={gate.risks} placeholder="Risks" />
           <Button className="sm:col-span-2" type="submit">Request Sponsor Approval</Button>
-        </form>
+        </ActionForm>
         <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
           <GateDecisionForm gateId={gate.gateId} decision="approved" label="Sponsor Approve" />
           <GateDecisionForm gateId={gate.gateId} decision="rejected" label="Sponsor Reject" />
@@ -2285,7 +2615,14 @@ function GateDialog({ gate }: { gate: RecordMap }) {
 
 function GateDecisionForm({ gateId, decision, label }: { gateId: string; decision: string; label: string }) {
   return (
-    <form action={decideProjectGateAction} className="grid gap-2 rounded-md border p-3">
+    <ActionForm
+      action={decideProjectGateAction}
+      className="grid gap-2 rounded-md border p-3"
+      confirmMessage={decision === "approved"
+        ? "Record Sponsor approval for this gate? The project moves to the next execution stage."
+        : "Record Sponsor rejection for this gate? The project stays at the current stage."}
+      successMessage={`Gate decision recorded: ${decision}.`}
+    >
       <input name="gate_id" type="hidden" value={gateId} />
       <input name="decision" type="hidden" value={decision} />
       <Select name="sponsor_exception" defaultValue="false">
@@ -2294,7 +2631,7 @@ function GateDecisionForm({ gateId, decision, label }: { gateId: string; decisio
       </Select>
       <Input name="comments" placeholder="Sponsor comments" />
       <Button type="submit" variant={decision === "approved" ? "default" : "outline"}>{label}</Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -2307,12 +2644,12 @@ function CommercialFlowDecisionDialog({ flowId }: { flowId: string }) {
           <DialogTitle>Commercial Flow Approval</DialogTitle>
           <DialogDescription>Tracks approval only. Accounting remains outside Sevenfold.</DialogDescription>
         </DialogHeader>
-        <form action={decideCommercialProcurementFlowAction} className="grid gap-3">
+        <ActionForm action={decideCommercialProcurementFlowAction} className="grid gap-3">
           <input name="flow_id" type="hidden" value={flowId} />
           <NativeSelect name="approval_status" options={["approved", "rejected", "returned"]} />
           <Textarea name="comments" placeholder="Comments" />
           <Button type="submit">Save Decision</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -2321,16 +2658,20 @@ function CommercialFlowDecisionDialog({ flowId }: { flowId: string }) {
 function GovernancePanel({ data }: { data: DashboardData }) {
   const governance = data.delivery_governance || { changeRequests: [], incidents: [], governanceRecords: [] };
   const summary = data.governance_summary;
-  const projectOptions = data.project_execution?.projects.map((project) => ({ id: project.projectId, label: `${project.projectId} - ${project.customer}` })) || [];
+  const executionProjects = data.project_execution?.projects || [];
+  const projectOptions = executionProjects.map((project) => ({ id: project.projectId, label: `${project.projectId} - ${project.customer}` }));
+  const projectCurrency = new Map(executionProjects.map((project) => [project.projectId, project.currency || "USD"]));
+  const currencyCodes = uniqueCurrencies(executionProjects.map((project) => project.currency || "USD"));
+  const summaryCurrency = currencyCodes.length === 1 ? currencyCodes[0] : "";
   return (
     <section className="grid gap-5">
       <div className="grid grid-cols-8 gap-3 max-2xl:grid-cols-4 max-xl:grid-cols-3 max-md:grid-cols-2 max-sm:grid-cols-1">
         <MetricCard label="Open CR" value={String(summary?.openChangeRequests || 0)} />
         <MetricCard label="Approved CR" value={String(summary?.approvedChangeRequests || 0)} />
-        <MetricCard label="Add-on Sales" value={money(summary?.addOnSalesValue || "0")} />
+        <MetricCard label="Add-on Sales" value={mixedCurrencyCompact(Number(summary?.addOnSalesValue || 0), summaryCurrency)} />
         <MetricCard label="Open Incidents" value={String(summary?.openIncidents || 0)} />
         <MetricCard label="Red Quality" value={String(summary?.redIncidents || 0)} />
-        <MetricCard label="Net Sales" value={money(summary?.netSalesEstimate || "0")} />
+        <MetricCard label="Net Sales" value={mixedCurrencyCompact(Number(summary?.netSalesEstimate || 0), summaryCurrency)} />
         <MetricCard label="Resource Gaps" value={String(summary?.resourceGaps || 0)} />
         <MetricCard label="Timesheet Not Ready" value={String(summary?.timesheetNotReady || 0)} />
       </div>
@@ -2345,7 +2686,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
           <Card>
             <CardHeader>
               <CardTitle>Single-pane Executive Dashboard</CardTitle>
-              <CardDescription>Cached summary. Heavy detail is loaded only in the tabs below; no polling.</CardDescription>
+              <CardDescription>The latest governance escalations across your projects.</CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-3 max-lg:grid-cols-1">
               {(summary?.latestEscalations || []).map((item) => (
@@ -2364,7 +2705,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
         </TabsContent>
         <TabsContent value="cr">
           <OpportunityFormCard title="Create Change Request">
-            <form action={createChangeRequestAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createChangeRequestAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <Select name="project_id" required><SelectTrigger><SelectValue placeholder="Project" /></SelectTrigger><SelectContent>{projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.label}</SelectItem>)}</SelectContent></Select>
               <Input name="cr_title" placeholder="CR title" required />
               <MoneyInput name="additional_budget" placeholder="Additional budget" />
@@ -2378,7 +2719,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
               <Textarea name="risk_impact" placeholder="Risk impact" />
               <Input name="document_attachment" placeholder="Drive file link or ID" />
               <Button className="xl:col-span-4" type="submit">Submit CR for Sponsor Approval</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["CR", "Project", "Title", "Budget", "Add-on Sales", "Status", "Actions"]}
@@ -2388,8 +2729,8 @@ function GovernancePanel({ data }: { data: DashboardData }) {
                 <TableCell className="font-mono text-xs">{cr.crId}</TableCell>
                 <TableCell>{cr.projectId}</TableCell>
                 <TableCell>{cr.title}</TableCell>
-                <TableCell>{money(cr.additionalBudget)}</TableCell>
-                <TableCell>{money(cr.addOnSalesValue)}</TableCell>
+                <TableCell>{money(cr.additionalBudget, projectCurrency.get(cr.projectId))}</TableCell>
+                <TableCell>{money(cr.addOnSalesValue, projectCurrency.get(cr.projectId))}</TableCell>
                 <TableCell><StatusBadge value={cr.approvalStatus} /></TableCell>
                 <TableCell><CrDecisionDialog crId={cr.crId} /></TableCell>
               </TableRow>
@@ -2398,7 +2739,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
         </TabsContent>
         <TabsContent value="quality">
           <OpportunityFormCard title="Create Quality / Incident Record">
-            <form action={createQualityIncidentAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createQualityIncidentAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <Select name="project_id"><SelectTrigger><SelectValue placeholder="Project" /></SelectTrigger><SelectContent>{projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.label}</SelectItem>)}</SelectContent></Select>
               <Input name="incident_type" placeholder="Incident type" required />
               <NativeSelect name="severity" options={["low", "medium", "high", "critical"]} />
@@ -2414,7 +2755,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
               <NativeSelect name="rag_impact" options={["green", "amber", "red"]} />
               <NativeSelect name="status" options={["open", "in_progress", "resolved", "closed"]} />
               <Button className="xl:col-span-4" type="submit">Save Incident</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Incident", "Project", "Type", "Severity", "Source", "Owner", "Due", "RAG", "Status"]}
@@ -2436,7 +2777,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
         </TabsContent>
         <TabsContent value="records">
           <OpportunityFormCard title="Create Governance Record">
-            <form action={createGovernanceRecordAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createGovernanceRecordAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <NativeSelect name="level" options={["Weekly Project Governance", "Bi-weekly Program Governance Board", "Monthly Business Review", "Monthly Portfolio Governance Board", "Quarterly Executive Steering Committee"]} />
               <NativeSelect name="workstream" options={["Project Delivery Governance", "Commercial Governance", "Financial Governance", "Resource Governance", "Quality Governance", "Risk Governance"]} />
               <Select name="project_id"><SelectTrigger><SelectValue placeholder="Project optional" /></SelectTrigger><SelectContent>{projectOptions.map((project) => <SelectItem key={project.id} value={project.id}>{project.label}</SelectItem>)}</SelectContent></Select>
@@ -2446,7 +2787,7 @@ function GovernancePanel({ data }: { data: DashboardData }) {
               <Input name="due_date" type="date" />
               <NativeSelect name="status" options={["open", "monitoring", "escalated", "closed"]} />
               <Button className="xl:col-span-4" type="submit">Save Governance Record</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Level", "Workstream", "Project", "Period", "Escalations", "Owner", "Status"]}
@@ -2478,12 +2819,17 @@ function CrDecisionDialog({ crId }: { crId: string }) {
           <DialogTitle>Sponsor Decision</DialogTitle>
           <DialogDescription>Approved CRs update project baseline and dashboard impact.</DialogDescription>
         </DialogHeader>
-        <form action={decideChangeRequestAction} className="grid gap-3">
+        <ActionForm
+          action={decideChangeRequestAction}
+          className="grid gap-3"
+          confirmMessage="Record this change request decision? Approved CRs update the project's budget and revenue baseline."
+          successMessage="Change request decision recorded."
+        >
           <input name="cr_id" type="hidden" value={crId} />
           <NativeSelect name="decision" options={["approved", "rejected", "returned"]} />
           <Textarea name="comments" placeholder="Decision comments" />
           <Button type="submit">Record Decision</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -2507,7 +2853,7 @@ function TalentPlanningPanel({ data }: { data: DashboardData }) {
           <Card>
             <CardHeader>
               <CardTitle>Talent Planning</CardTitle>
-              <CardDescription>Simple filtered table for readiness, succession, and retention risk. No heavy charts.</CardDescription>
+              <CardDescription>Readiness, succession, and retention risk across imported talent records.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
               <NativeSelect name="readiness_filter" value={readiness} onValueChange={setReadiness} options={["all", "immediately", "1-2 years", "3-5 years"]} />
@@ -2534,13 +2880,13 @@ function TalentPlanningPanel({ data }: { data: DashboardData }) {
         <TabsContent value="import">
           <div className="grid grid-cols-2 gap-5 max-lg:grid-cols-1">
             <OpportunityFormCard title="Import Talent Excel">
-              <form action={importTalentPlanningExcelAction} className="grid gap-3">
+              <ActionForm action={importTalentPlanningExcelAction} className="grid gap-3">
                 <Input name="file" type="file" accept=".xlsx,.xls,.csv" required />
                 <Button type="submit">Import Excel</Button>
-              </form>
+              </ActionForm>
             </OpportunityFormCard>
             <OpportunityFormCard title="Add Talent Record">
-              <form action={createTalentRecordAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+              <ActionForm action={createTalentRecordAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                 <Input name="name" placeholder="Name" required />
                 <Input name="age" placeholder="Age" />
                 <Input name="gender" placeholder="Gender" />
@@ -2554,7 +2900,7 @@ function TalentPlanningPanel({ data }: { data: DashboardData }) {
                 <Input name="succession_candidate_status" placeholder="Succession candidate status" />
                 <Textarea name="note" placeholder="Note" />
                 <Button className="sm:col-span-2" type="submit">Save Talent</Button>
-              </form>
+              </ActionForm>
             </OpportunityFormCard>
           </div>
         </TabsContent>
@@ -2565,19 +2911,21 @@ function TalentPlanningPanel({ data }: { data: DashboardData }) {
 
 function RatecardPanel({ data }: { data: DashboardData }) {
   const ratecard = data.ratecard || { resources: [], fxRates: [], fxUpdatedAt: "" };
+  const ratecardCurrencies = uniqueCurrencies(ratecard.resources.map((row) => row.currency || "USD"));
+  const ratecardCurrency = ratecardCurrencies.length === 1 ? ratecardCurrencies[0] : "";
   return (
     <section className="grid gap-5">
       <div className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
         <MetricCard label="Ratecards" value={String(ratecard.resources.length)} />
         <MetricCard label="FX Cache" value={ratecard.fxUpdatedAt ? new Date(ratecard.fxUpdatedAt).toLocaleDateString() : "-"} />
-        <MetricCard label="Avg Recommended" value={money(String(avg(ratecard.resources.map((row) => Number(row.recommendedHourlyCost || 0)))))} />
-        <MetricCard label="Avg Blended" value={money(String(avg(ratecard.resources.map((row) => Number(row.blendedRate || 0)))))} />
+        <MetricCard label="Avg Recommended / Hour" value={ratecard.resources.length ? mixedCurrencyCompact(avg(ratecard.resources.map((row) => Number(row.recommendedHourlyCost || 0))), ratecardCurrency) : "-"} />
+        <MetricCard label="Avg Blended / Hour" value={ratecard.resources.length ? mixedCurrencyCompact(avg(ratecard.resources.map((row) => Number(row.blendedRate || 0))), ratecardCurrency) : "-"} />
       </div>
       <Tabs defaultValue="costing">
         <TabsList><TabsTrigger value="costing">Resource Costing</TabsTrigger><TabsTrigger value="import">Import</TabsTrigger><TabsTrigger value="fx">FX Cache</TabsTrigger></TabsList>
         <TabsContent value="costing">
           <OpportunityFormCard title="Ratecard & Blended Costing">
-            <form action={upsertRatecardResourceAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={upsertRatecardResourceAction} className="grid grid-cols-5 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
               <Input name="resource_type" placeholder="Resource type" required />
               <NativeSelect name="currency" options={["USD", "EUR", "IDR", "SGD", "AUD", "THB"]} />
               <MoneyInput name="monthly_net_accrual_salary" placeholder="Monthly net accrual salary" />
@@ -2595,7 +2943,7 @@ function RatecardPanel({ data }: { data: DashboardData }) {
               <Input name="senior_percent" placeholder="Senior %" />
               <Input name="junior_percent" placeholder="Junior %" />
               <Button className="2xl:col-span-5" type="submit">Save Ratecard</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
           <DataTable
             headers={["Resource", "Currency", "Monthly Salary", "Hours", "Base / Hour", "Ops / Hour", "Recommended", "Blended", "Markup"]}
@@ -2604,12 +2952,12 @@ function RatecardPanel({ data }: { data: DashboardData }) {
               <TableRow key={row.ratecardId}>
                 <TableCell>{row.resourceType}</TableCell>
                 <TableCell>{row.currency}</TableCell>
-                <TableCell>{money(row.monthlyNetAccrualSalary)}</TableCell>
+                <TableCell>{money(row.monthlyNetAccrualSalary, row.currency)}</TableCell>
                 <TableCell>{row.monthlyWorkingHours}</TableCell>
-                <TableCell>{money(row.baseHourlyCost)}</TableCell>
-                <TableCell>{money(row.operationalCostPerHour)}</TableCell>
-                <TableCell>{money(row.recommendedHourlyCost)}</TableCell>
-                <TableCell>{money(row.blendedRate)}</TableCell>
+                <TableCell>{money(row.baseHourlyCost, row.currency)}</TableCell>
+                <TableCell>{money(row.operationalCostPerHour, row.currency)}</TableCell>
+                <TableCell>{money(row.recommendedHourlyCost, row.currency)}</TableCell>
+                <TableCell>{money(row.blendedRate, row.currency)}</TableCell>
                 <TableCell>{row.markupPercent}%</TableCell>
               </TableRow>
             )}
@@ -2617,20 +2965,20 @@ function RatecardPanel({ data }: { data: DashboardData }) {
         </TabsContent>
         <TabsContent value="import">
           <OpportunityFormCard title="Optional Ratecard Excel Import">
-            <form action={importRatecardExcelAction} className="grid gap-3">
+            <ActionForm action={importRatecardExcelAction} className="grid gap-3">
               <Input name="file" type="file" accept=".xlsx,.xls,.csv" required />
               <Button type="submit">Import Ratecard</Button>
-            </form>
+            </ActionForm>
           </OpportunityFormCard>
         </TabsContent>
         <TabsContent value="fx">
           <Card>
             <CardHeader>
               <CardTitle>Manual FX Cache</CardTitle>
-              <CardDescription>Currency refresh is manual only and cache-valid for at least 24 hours. Fallback rates are used if no external API is configured.</CardDescription>
+              <CardDescription>Rates refresh on demand and stay cached for 24 hours. Reference rates apply when no market feed is configured.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4">
-              <form action={manualRefreshFxRatesAction}><Button type="submit">Refresh FX Cache Manually</Button></form>
+              <ActionForm action={manualRefreshFxRatesAction}><Button type="submit">Refresh FX Cache Manually</Button></ActionForm>
               <DataTable
                 headers={["Currency", "Rate to USD", "Source", "Updated"]}
                 rows={ratecard.fxRates}
@@ -2695,7 +3043,7 @@ function UsersPanel({
                           <DialogTitle>Edit user</DialogTitle>
                           <DialogDescription>Update role, scope, status, or reset password.</DialogDescription>
                         </DialogHeader>
-                        <form action={updateUserAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                        <ActionForm action={updateUserAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
                           <input name="user_id" type="hidden" value={user.user_id} />
                           <Input name="full_name" defaultValue={user.full_name} placeholder="Full name" />
                           <Input name="role_id" defaultValue={user.role_id} placeholder="Role ID" />
@@ -2705,7 +3053,7 @@ function UsersPanel({
                           <Input name="temporary_password" placeholder="Reset password" type="password" />
                           <Input name="status" defaultValue={user.status} placeholder="Status" />
                           <Button className="sm:col-span-2" type="submit">Save changes</Button>
-                        </form>
+                        </ActionForm>
                       </DialogContent>
                     </Dialog>
                   </TableCell>
@@ -2722,7 +3070,7 @@ function UsersPanel({
             <CardDescription>Assign scoped access from existing client and project master data.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form action={createUserAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createUserAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <Input name="email" placeholder="Email" type="email" required />
               <Input name="full_name" placeholder="Full name" required />
               <RoleSelect />
@@ -2734,7 +3082,7 @@ function UsersPanel({
               <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
                 <Plus className="h-4 w-4" /> Create User
               </Button>
-            </form>
+            </ActionForm>
           </CardContent>
         </Card>
       </TabsContent>
@@ -2758,17 +3106,17 @@ function MasterSetup({
     <section className="grid gap-5">
       <div className="grid grid-cols-2 gap-5 max-lg:grid-cols-1">
         <OpportunityFormCard title="Create Client">
-            <form action={createClientAction} className="grid gap-3">
+            <ActionForm action={createClientAction} className="grid gap-3">
               <Input name="client_id" placeholder="Client ID, optional auto-generated" />
               <Input name="client_name" placeholder="Client name" required />
               <Input name="client_code" placeholder="Client code, e.g. TECHBROS" required />
               <Input name="primary_contact_name" placeholder="Primary contact" />
               <Input name="primary_contact_email" placeholder="Primary contact email" />
               <Button type="submit"><Plus className="h-4 w-4" /> Create Client</Button>
-            </form>
+            </ActionForm>
         </OpportunityFormCard>
         <OpportunityFormCard title="Create Project">
-            <form action={createProjectAction} className="grid gap-3">
+            <ActionForm action={createProjectAction} className="grid gap-3">
               <NativeSelect
                 name="client_id"
                 value={clientForProject}
@@ -2784,7 +3132,7 @@ function MasterSetup({
               <Input name="currency_manual" placeholder="Add new currency manually, e.g. JPY" maxLength={3} />
               <Input name="start_date" type="date" />
               <Button type="submit"><Plus className="h-4 w-4" /> Create Project</Button>
-            </form>
+            </ActionForm>
         </OpportunityFormCard>
       </div>
       <Card>
@@ -2822,7 +3170,7 @@ function CandidatePanel({
   return (
     <section className="grid gap-5">
       <OpportunityFormCard title="Create Candidate">
-          <form action={createCandidateAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+          <ActionForm action={createCandidateAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             <Input name="full_name" placeholder="Full name" required />
             <Input name="email" placeholder="Email" type="email" required />
             <Input name="phone" placeholder="Phone" />
@@ -2840,7 +3188,7 @@ function CandidatePanel({
             <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
               <Plus className="h-4 w-4" /> Create Candidate
             </Button>
-          </form>
+          </ActionForm>
       </OpportunityFormCard>
       <Card>
         <CardHeader>
@@ -2870,12 +3218,12 @@ function CandidatePanel({
                         <DialogTitle>Submit candidate</DialogTitle>
                         <DialogDescription>Choose the target client and project for client review.</DialogDescription>
                       </DialogHeader>
-                      <form action={submitCandidateAction} className="grid gap-3">
+                      <ActionForm action={submitCandidateAction} className="grid gap-3">
                         <input name="candidate_id" type="hidden" value={candidate.candidate_id} />
                         <NativeSelect name="client_id" defaultValue={candidate.client_id} options={clients} emptyLabel="Client" required />
                         <NativeSelect name="project_id" defaultValue={candidate.project_id} options={projects} emptyLabel="Project" required />
                         <Button type="submit">Submit to Client</Button>
-                      </form>
+                      </ActionForm>
                     </DialogContent>
                   </Dialog>
                   </div>
@@ -2886,10 +3234,10 @@ function CandidatePanel({
                     <div className="mt-2"><StatusBadge value="Onboarded" /></div>
                   )}
                   {candidate.decision === "PROCEED" && candidate.status !== "onboarding_in_progress" && candidate.status !== "onboarded" && (
-                    <form action={startOnboardingFromCandidateAction} className="mt-2">
+                    <ActionForm action={startOnboardingFromCandidateAction} className="mt-2">
                       <input name="candidate_id" type="hidden" value={candidate.candidate_id} />
                       <Button variant="secondary" size="sm" type="submit">Start Onboarding</Button>
-                    </form>
+                    </ActionForm>
                   )}
                 </TableCell>
               </TableRow>
@@ -2920,7 +3268,7 @@ function EditCandidateDialog({
           <DialogTitle>Edit candidate</DialogTitle>
           <DialogDescription>Clean up candidate profile, assignment target, and workflow status.</DialogDescription>
         </DialogHeader>
-        <form action={updateCandidateAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+        <ActionForm action={updateCandidateAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
           <input name="candidate_id" type="hidden" value={candidate.candidate_id} />
           <Input name="full_name" defaultValue={candidate.full_name} placeholder="Full name" required />
           <Input name="email" defaultValue={candidate.email} placeholder="Email" type="email" required />
@@ -2934,17 +3282,17 @@ function EditCandidateDialog({
           <Select name="status" defaultValue={candidate.status || "active"}>
             <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="active">active</SelectItem>
-              <SelectItem value="submitted_to_client">submitted_to_client</SelectItem>
-              <SelectItem value="proceed">proceed</SelectItem>
-              <SelectItem value="hold">hold</SelectItem>
-              <SelectItem value="rejected">rejected</SelectItem>
-              <SelectItem value="onboarding_in_progress">onboarding_in_progress</SelectItem>
-              <SelectItem value="onboarded">onboarded</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="submitted_to_client">Submitted to client</SelectItem>
+              <SelectItem value="proceed">Proceed</SelectItem>
+              <SelectItem value="hold">On hold</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
+              <SelectItem value="onboarding_in_progress">Onboarding in progress</SelectItem>
+              <SelectItem value="onboarded">Onboarded</SelectItem>
             </SelectContent>
           </Select>
           <Button className="sm:col-span-2" type="submit">Save Candidate</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -2992,7 +3340,7 @@ function FeedbackPanel({
         </CardHeader>
         <CardContent>
           {selected ? (
-            <form action={submitFeedbackAction} className="grid gap-3">
+            <ActionForm action={submitFeedbackAction} className="grid gap-3">
               <input name="candidate_id" type="hidden" value={selected.candidate_id} />
               <input name="client_id" type="hidden" value={selected.client_id} />
               <input name="project_id" type="hidden" value={selected.project_id} />
@@ -3005,7 +3353,7 @@ function FeedbackPanel({
               <Textarea name="comment" placeholder="Comment" required />
               <Textarea name="rejection_reason" placeholder="Rejection reason if rejected" />
               <Button type="submit">Submit Feedback</Button>
-            </form>
+            </ActionForm>
           ) : (
             <EmptyState title="No candidate selected" description="Open a submitted candidate to capture client feedback." />
           )}
@@ -3019,11 +3367,13 @@ function OnboardingPanel({
   employees,
   employeeContracts,
   onboardingDocuments,
+  projects,
   user,
 }: {
   employees: RecordMap[];
   employeeContracts: RecordMap[];
   onboardingDocuments: RecordMap[];
+  projects: DashboardData["projects"];
   user: DashboardData["user"];
 }) {
   const canMarkReady = user?.role_id === "ROLE_CLIENT_APPROVER" || user?.role_id === "ROLE_SUPER_ADMIN";
@@ -3037,7 +3387,7 @@ function OnboardingPanel({
         <Card>
           <CardHeader>
             <CardTitle>Resource Onboarding Checklist</CardTitle>
-            <CardDescription>Document acknowledgement and readiness gates are enforced by the backend.</CardDescription>
+            <CardDescription>Each step requires the published document to be acknowledged before the resource can be marked ready.</CardDescription>
           </CardHeader>
           <CardContent>
             <DataTable
@@ -3069,7 +3419,7 @@ function OnboardingPanel({
         </Card>
       </TabsContent>
       <TabsContent value="commercial">
-        <EmployeeCommercialPanel employees={employees} employeeContracts={employeeContracts} />
+        <EmployeeCommercialPanel employees={employees} employeeContracts={employeeContracts} projects={projects} />
       </TabsContent>
     </Tabs>
   );
@@ -3109,13 +3459,13 @@ function OnboardingDocumentStep({
           </a>
         </Button>
       ) : null}
-      <form action={markOnboardingStepAction}>
+      <ActionForm action={markOnboardingStepAction}>
         <input name="employee_id" type="hidden" value={employee.employee_id} />
         <input name="step" type="hidden" value={step} />
         <Button disabled={!doc?.drive_file_id} size="sm" type="submit">
           Acknowledge
         </Button>
-      </form>
+      </ActionForm>
     </div>
   );
 }
@@ -3134,22 +3484,32 @@ function ReadyGate({ employee, canMarkReady }: { employee: RecordMap; canMarkRea
     return <StatusBadge value={complete ? "Awaiting client" : "Pending"} />;
   }
   return (
-    <form action={markOnboardingStepAction}>
+    <ActionForm action={markOnboardingStepAction}>
       <input name="employee_id" type="hidden" value={employee.employee_id} />
       <input name="step" type="hidden" value="ready" />
       <Button disabled={!complete} size="sm" type="submit">
         Client Confirm Ready
       </Button>
-    </form>
+    </ActionForm>
   );
+}
+
+/**
+ * Payroll amounts (PPH21/23 and BPJS are Indonesian statutory deductions) default to
+ * IDR; a registered project currency on the employee's assignment overrides it.
+ */
+function employeePayrollCurrency(employee: RecordMap, projects: DashboardData["projects"]) {
+  return projects.find((project) => project.id === employee.assigned_project_id)?.currency || "IDR";
 }
 
 function EmployeeCommercialPanel({
   employees,
   employeeContracts,
+  projects,
 }: {
   employees: RecordMap[];
   employeeContracts: RecordMap[];
+  projects: DashboardData["projects"];
 }) {
   return (
     <section className="grid gap-5">
@@ -3162,31 +3522,34 @@ function EmployeeCommercialPanel({
           <DataTable
             headers={["Employee", "Contract", "Gross", "Bill Rate", "Mgmt Fee", "Tax", "BPJS", "Invoice Est.", "Action"]}
             rows={employees}
-            render={(employee) => (
-              <TableRow key={employee.employee_id}>
-                <TableCell>
-                  <div className="font-medium">{employee.full_name}</div>
-                  <div className="font-mono text-xs text-muted-foreground">{employee.employee_id}</div>
-                </TableCell>
-                <TableCell>
-                  <StatusBadge value={employee.contract_status || "PENDING"} />
-                  <div className="mt-1 text-xs text-muted-foreground">{employee.contract_type || "-"}</div>
-                </TableCell>
-                <TableCell>{money(employee.gross_monthly_salary)}</TableCell>
-                <TableCell>{money(employee.client_bill_rate)}</TableCell>
-                <TableCell>{money(employee.management_fee_amount)} <span className="text-xs text-muted-foreground">({employee.management_fee_rate || "15"}%)</span></TableCell>
-                <TableCell>
-                  <div>{employee.tax_type || "PPH21"} {employee.tax_rate || "0"}%</div>
-                  <div className="text-xs text-muted-foreground">21: {money(employee.pph21_amount)} / 23: {money(employee.pph23_amount)}</div>
-                </TableCell>
-                <TableCell>
-                  <div>KES {money(employee.bpjs_kesehatan_amount)}</div>
-                  <div className="text-xs text-muted-foreground">TK {money(employee.bpjs_tk_amount)}</div>
-                </TableCell>
-                <TableCell>{money(employee.invoice_amount_estimate)}</TableCell>
-                <TableCell><EmployeeCommercialDialog employee={employee} /></TableCell>
-              </TableRow>
-            )}
+            render={(employee) => {
+              const currency = employeePayrollCurrency(employee, projects);
+              return (
+                <TableRow key={employee.employee_id}>
+                  <TableCell>
+                    <div className="font-medium">{employee.full_name}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{employee.employee_id}</div>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge value={employee.contract_status || "PENDING"} />
+                    <div className="mt-1 text-xs text-muted-foreground">{employee.contract_type || "-"}</div>
+                  </TableCell>
+                  <TableCell>{money(employee.gross_monthly_salary, currency)}</TableCell>
+                  <TableCell>{money(employee.client_bill_rate, currency)}</TableCell>
+                  <TableCell>{money(employee.management_fee_amount, currency)} <span className="text-xs text-muted-foreground">({employee.management_fee_rate || "15"}%)</span></TableCell>
+                  <TableCell>
+                    <div>{employee.tax_type || "PPH21"} {employee.tax_rate || "0"}%</div>
+                    <div className="text-xs text-muted-foreground">21: {money(employee.pph21_amount, currency)} / 23: {money(employee.pph23_amount, currency)}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div>KES {money(employee.bpjs_kesehatan_amount, currency)}</div>
+                    <div className="text-xs text-muted-foreground">TK {money(employee.bpjs_tk_amount, currency)}</div>
+                  </TableCell>
+                  <TableCell>{money(employee.invoice_amount_estimate, currency)}</TableCell>
+                  <TableCell><EmployeeCommercialDialog employee={employee} currency={currency} /></TableCell>
+                </TableRow>
+              );
+            }}
           />
         </CardContent>
       </Card>
@@ -3199,22 +3562,26 @@ function EmployeeCommercialPanel({
           <DataTable
             headers={["Contract", "Employee", "Type", "Period", "Gross", "Bill Rate", "Fee", "Tax", "Status"]}
             rows={employeeContracts}
-            render={(contract) => (
-              <TableRow key={contract.contract_id}>
-                <TableCell>
-                  <div className="font-mono text-xs">{contract.contract_id}</div>
-                  <div className="text-xs text-muted-foreground">{contract.contract_number || "-"}</div>
-                </TableCell>
-                <TableCell className="font-mono text-xs">{contract.employee_id}</TableCell>
-                <TableCell>{contract.contract_type || "-"}</TableCell>
-                <TableCell>{contract.start_date || "-"} - {contract.end_date || "-"}</TableCell>
-                <TableCell>{money(contract.gross_monthly_salary)}</TableCell>
-                <TableCell>{money(contract.client_bill_rate)}</TableCell>
-                <TableCell>{money(contract.management_fee_amount)}</TableCell>
-                <TableCell>{contract.tax_type || "-"} {contract.tax_rate || "0"}%</TableCell>
-                <TableCell><StatusBadge value={contract.status} /></TableCell>
-              </TableRow>
-            )}
+            render={(contract) => {
+              const employee = employees.find((row) => row.employee_id === contract.employee_id);
+              const currency = employee ? employeePayrollCurrency(employee, projects) : "IDR";
+              return (
+                <TableRow key={contract.contract_id}>
+                  <TableCell>
+                    <div className="font-mono text-xs">{contract.contract_id}</div>
+                    <div className="text-xs text-muted-foreground">{contract.contract_number || "-"}</div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{contract.employee_id}</TableCell>
+                  <TableCell>{contract.contract_type || "-"}</TableCell>
+                  <TableCell>{contract.start_date || "-"} - {contract.end_date || "-"}</TableCell>
+                  <TableCell>{money(contract.gross_monthly_salary, currency)}</TableCell>
+                  <TableCell>{money(contract.client_bill_rate, currency)}</TableCell>
+                  <TableCell>{money(contract.management_fee_amount, currency)}</TableCell>
+                  <TableCell>{contract.tax_type || "-"} {contract.tax_rate || "0"}%</TableCell>
+                  <TableCell><StatusBadge value={contract.status} /></TableCell>
+                </TableRow>
+              );
+            }}
           />
         </CardContent>
       </Card>
@@ -3222,7 +3589,7 @@ function EmployeeCommercialPanel({
   );
 }
 
-function EmployeeCommercialDialog({ employee }: { employee: RecordMap }) {
+function EmployeeCommercialDialog({ employee, currency }: { employee: RecordMap; currency: string }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -3231,9 +3598,9 @@ function EmployeeCommercialDialog({ employee }: { employee: RecordMap }) {
       <DialogContent className="max-h-[90vh] max-w-5xl overflow-auto">
         <DialogHeader>
           <DialogTitle>Edit commercial terms</DialogTitle>
-          <DialogDescription>Backend recalculates PPH, BPJS, 15% management fee default, net pay, and invoice estimate.</DialogDescription>
+          <DialogDescription>Tax (PPH), BPJS, management fee, net pay, and invoice estimates are recalculated automatically when you save. Amounts are in {currency}.</DialogDescription>
         </DialogHeader>
-        <form action={updateEmployeeCommercialAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+        <ActionForm action={updateEmployeeCommercialAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
           <input name="employee_id" type="hidden" value={employee.employee_id} />
           <Input name="contract_status" defaultValue={employee.contract_status || "PENDING"} placeholder="Contract status" />
           <Input name="contract_type" defaultValue={employee.contract_type} placeholder="Contract type" />
@@ -3266,14 +3633,14 @@ function EmployeeCommercialDialog({ employee }: { employee: RecordMap }) {
           <div className="grid gap-2 rounded-md border bg-muted/30 p-3 text-sm xl:col-span-4">
             <div className="font-medium">Current stored estimates</div>
             <div className="grid grid-cols-4 gap-2 max-lg:grid-cols-2 max-sm:grid-cols-1">
-              <span>PPH21: {money(employee.pph21_amount)}</span>
-              <span>PPH23: {money(employee.pph23_amount)}</span>
-              <span>Net pay: {money(employee.net_pay_estimate)}</span>
-              <span>Invoice est.: {money(employee.invoice_amount_estimate)}</span>
+              <span>PPH21: {money(employee.pph21_amount, currency)}</span>
+              <span>PPH23: {money(employee.pph23_amount, currency)}</span>
+              <span>Net pay: {money(employee.net_pay_estimate, currency)}</span>
+              <span>Invoice est.: {money(employee.invoice_amount_estimate, currency)}</span>
             </div>
           </div>
           <Button className="xl:col-span-4" type="submit">Save Commercial Terms</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -3323,7 +3690,7 @@ function DocumentsPanel({
       <Card>
         <CardHeader>
           <CardTitle>Template & Document Management</CardTitle>
-          <CardDescription>Binary files stay in Google Drive through the GAS adapter. Nexus stores metadata and Drive file IDs only.</CardDescription>
+          <CardDescription>Files are stored in the secure document repository. Sevenfold keeps the reference, type, and visibility for each document.</CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="templates">
@@ -3359,7 +3726,7 @@ function DocumentsPanel({
       <Card>
         <CardHeader>
           <CardTitle>Document Register</CardTitle>
-          <CardDescription>Metadata only. Sensitive files remain controlled in Drive.</CardDescription>
+          <CardDescription>Document references with controlled access. Sensitive files stay in the secure repository.</CardDescription>
         </CardHeader>
         <CardContent>
           <DataTable
@@ -3389,9 +3756,8 @@ function DocumentsPanel({
   );
 }
 
-// Matches every status value actions.ts's cashflow gate (getApprovedOpportunityForCashflow)
-// and framework-defaults.ts's Opportunity Analysis workflowStatuses actually check for.
-const OPPORTUNITY_STATUS_OPTIONS = ["draft", "submitted", "pricing_approved", "ready_for_cashflow", "approved"];
+// Opportunity lifecycle statuses/transitions live in src/lib/opportunityWorkflow.ts,
+// shared between the server action and the UI so they cannot drift apart.
 
 const TEMPLATE_CATEGORIES = [
   "Statement of Work",
@@ -3422,10 +3788,10 @@ function TemplateManagementAdmin({ templates }: { templates: NonNullable<Dashboa
       <Card>
         <CardHeader>
           <CardTitle>Upload Template Draft</CardTitle>
-          <CardDescription>Upload sends the binary to Google Drive through GAS and stores metadata in Nexus.</CardDescription>
+          <CardDescription>Uploads are stored in the document repository and versioned through the lifecycle below.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form action={uploadTemplateAction} className="grid grid-cols-6 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+          <ActionForm action={uploadTemplateAction} className="grid grid-cols-6 gap-3 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
             <Input name="template_name" placeholder="Template name" required />
             <Input name="template_type" placeholder="Template type, e.g. SOW" required />
             <Select name="document_category" required>
@@ -3443,7 +3809,7 @@ function TemplateManagementAdmin({ templates }: { templates: NonNullable<Dashboa
               <Plus className="h-4 w-4" />
               Upload Draft
             </Button>
-          </form>
+          </ActionForm>
         </CardContent>
       </Card>
       <DataTable
@@ -3485,12 +3851,16 @@ function TemplateManagementAdmin({ templates }: { templates: NonNullable<Dashboa
 
 function TemplateLifecycleButton({ templateId, action, label, disabled }: { templateId: string; action: string; label: string; disabled?: boolean }) {
   return (
-    <form action={transitionTemplateAction}>
+    <ActionForm
+      action={transitionTemplateAction}
+      confirmMessage={action === "retire" ? "Retire this template? It will no longer be offered for new documents." : undefined}
+      successMessage={`Template ${action} recorded.`}
+    >
       <input name="template_id" type="hidden" value={templateId} />
       <input name="template_action" type="hidden" value={action} />
       <input name="reason" type="hidden" value={`Template ${action}`} />
       <Button disabled={disabled} size="sm" type="submit" variant={action === "publish" ? "default" : "outline"}>{label}</Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -3505,7 +3875,7 @@ function EditDocumentDialog({ doc }: { doc: RecordMap }) {
           <DialogTitle>Edit document metadata</DialogTitle>
           <DialogDescription>Paste a Google Drive file link or raw file ID. Folder links cannot be opened as documents.</DialogDescription>
         </DialogHeader>
-        <form action={updateDocumentMetadataAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+        <ActionForm action={updateDocumentMetadataAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
           <input name="document_id" type="hidden" value={doc.document_id} />
           <Input name="file_name" defaultValue={doc.file_name} placeholder="File name" required />
           <Input name="document_type" defaultValue={doc.document_type} placeholder="Document type" required />
@@ -3515,13 +3885,13 @@ function EditDocumentDialog({ doc }: { doc: RecordMap }) {
           <Select name="status" defaultValue={doc.status || "active"}>
             <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="active">active</SelectItem>
-              <SelectItem value="inactive">inactive</SelectItem>
-              <SelectItem value="archived">archived</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="inactive">Inactive</SelectItem>
+              <SelectItem value="archived">Archived</SelectItem>
             </SelectContent>
           </Select>
           <Button className="sm:col-span-2" type="submit">Save Document</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -3529,7 +3899,7 @@ function EditDocumentDialog({ doc }: { doc: RecordMap }) {
 
 function OnboardingDocumentMetadataForm() {
   return (
-    <form action={createDocumentMetadataAction} className="mt-4 grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+    <ActionForm action={createDocumentMetadataAction} className="mt-4 grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
       <input name="entity_type" type="hidden" value="ONBOARDING_TEMPLATE" />
       <input name="entity_id" type="hidden" value="GLOBAL" />
       <Select name="document_type" required>
@@ -3547,7 +3917,7 @@ function OnboardingDocumentMetadataForm() {
       <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
         <Plus className="h-4 w-4" /> Save Onboarding Document
       </Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -3559,7 +3929,7 @@ function DocumentMetadataForm({
   entityOptions: DashboardData["clients"];
 }) {
   return (
-    <form action={createDocumentMetadataAction} className="mt-4 grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+    <ActionForm action={createDocumentMetadataAction} className="mt-4 grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
       <input name="entity_type" type="hidden" value={entityType} />
       <NativeSelect name="entity_id" options={entityOptions} emptyLabel={`Select ${entityType.toLowerCase()}`} required />
       <Input name="document_type" placeholder="Document type" required />
@@ -3568,17 +3938,17 @@ function DocumentMetadataForm({
       <Select name="visibility" defaultValue="internal">
         <SelectTrigger><SelectValue placeholder="Visibility" /></SelectTrigger>
         <SelectContent>
-          <SelectItem value="internal">internal</SelectItem>
-          <SelectItem value="employee_private">employee_private</SelectItem>
-          <SelectItem value="employee_visible">employee_visible</SelectItem>
-          <SelectItem value="client_visible">client_visible</SelectItem>
-          <SelectItem value="training">training</SelectItem>
+          <SelectItem value="internal">Internal only</SelectItem>
+          <SelectItem value="employee_private">Employee private</SelectItem>
+          <SelectItem value="employee_visible">Visible to employee</SelectItem>
+          <SelectItem value="client_visible">Visible to client</SelectItem>
+          <SelectItem value="training">Training material</SelectItem>
         </SelectContent>
       </Select>
       <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
         <Plus className="h-4 w-4" /> Add Metadata
       </Button>
-    </form>
+    </ActionForm>
   );
 }
 
@@ -3601,7 +3971,7 @@ function TimesheetsPanel({
   return (
     <section className="grid gap-5">
       <OpportunityFormCard title="Submit Timesheet">
-          <form action={createTimesheetAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+          <ActionForm action={createTimesheetAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             {isEmployee ? (
               <input name="employee_id" type="hidden" value={selfEmployeeId} />
             ) : (
@@ -3616,7 +3986,7 @@ function TimesheetsPanel({
             <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
               <Plus className="h-4 w-4" /> Submit Timesheet
             </Button>
-          </form>
+          </ActionForm>
       </OpportunityFormCard>
       <Card>
         <CardHeader>
@@ -3657,7 +4027,7 @@ function TimesheetStatusDialog({ row }: { row: RecordMap }) {
           <DialogTitle>Update timesheet</DialogTitle>
           <DialogDescription>Set Nexus and client approval status.</DialogDescription>
         </DialogHeader>
-        <form action={updateTimesheetStatusAction} className="grid gap-3">
+        <ActionForm action={updateTimesheetStatusAction} className="grid gap-3">
           <input name="timesheet_id" type="hidden" value={row.timesheet_id} />
           <StatusWorkflowSelect name="nexus_review_status" defaultValue={row.nexus_review_status} />
           <StatusWorkflowSelect name="client_approval_status" defaultValue={row.client_approval_status} />
@@ -3665,14 +4035,14 @@ function TimesheetStatusDialog({ row }: { row: RecordMap }) {
           <Select name="status" defaultValue={row.status || "submitted"}>
             <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="submitted">submitted</SelectItem>
-              <SelectItem value="approved">approved</SelectItem>
-              <SelectItem value="locked">locked</SelectItem>
-              <SelectItem value="rejected">rejected</SelectItem>
+              <SelectItem value="submitted">Submitted</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="locked">Locked</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
             </SelectContent>
           </Select>
           <Button type="submit">Save Status</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -3697,7 +4067,7 @@ function OvertimePanel({
   return (
     <section className="grid gap-5">
       <OpportunityFormCard title="Submit Overtime">
-          <form action={createOvertimeRequestAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+          <ActionForm action={createOvertimeRequestAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             {isEmployee ? (
               <input name="employee_id" type="hidden" value={selfEmployeeId} />
             ) : (
@@ -3710,12 +4080,12 @@ function OvertimePanel({
             <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
               <Plus className="h-4 w-4" /> Submit Overtime
             </Button>
-          </form>
+          </ActionForm>
       </OpportunityFormCard>
       <Card>
         <CardHeader>
           <CardTitle>Overtime Register</CardTitle>
-          <CardDescription>Requests remain auditable through the backend.</CardDescription>
+          <CardDescription>Every request and decision is kept in the audit trail.</CardDescription>
         </CardHeader>
         <CardContent>
           <DataTable
@@ -3749,7 +4119,7 @@ function OvertimeStatusDialog({ row }: { row: RecordMap }) {
           <DialogTitle>Update overtime</DialogTitle>
           <DialogDescription>Validate and approve overtime request.</DialogDescription>
         </DialogHeader>
-        <form action={updateOvertimeStatusAction} className="grid gap-3">
+        <ActionForm action={updateOvertimeStatusAction} className="grid gap-3">
           <input name="overtime_id" type="hidden" value={row.overtime_id} />
           <StatusWorkflowSelect name="nexus_validation_status" defaultValue={row.nexus_validation_status} />
           <StatusWorkflowSelect name="client_approval_status" defaultValue={row.client_approval_status} />
@@ -3757,13 +4127,13 @@ function OvertimeStatusDialog({ row }: { row: RecordMap }) {
           <Select name="status" defaultValue={row.status || "submitted"}>
             <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="submitted">submitted</SelectItem>
-              <SelectItem value="approved">approved</SelectItem>
-              <SelectItem value="rejected">rejected</SelectItem>
+              <SelectItem value="submitted">Submitted</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
             </SelectContent>
           </Select>
           <Button type="submit">Save Status</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -3788,7 +4158,7 @@ function LeavePanel({
   return (
     <section className="grid gap-5">
       <OpportunityFormCard title="Submit Leave">
-          <form action={createLeaveRequestAction} className="grid grid-cols-6 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+          <ActionForm action={createLeaveRequestAction} className="grid grid-cols-6 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
             {isEmployee ? (
               <input name="employee_id" type="hidden" value={selfEmployeeId} />
             ) : (
@@ -3803,7 +4173,7 @@ function LeavePanel({
             </div>
             <Textarea className="xl:col-span-5" name="reason" placeholder="Reason" />
             <Button type="submit"><Plus className="h-4 w-4" /> Submit Leave</Button>
-          </form>
+          </ActionForm>
       </OpportunityFormCard>
       <Card>
         <CardHeader>
@@ -3842,7 +4212,7 @@ function LeaveStatusDialog({ row }: { row: RecordMap }) {
           <DialogTitle>Update leave</DialogTitle>
           <DialogDescription>Approve leave and record timesheet impact.</DialogDescription>
         </DialogHeader>
-        <form action={updateLeaveStatusAction} className="grid gap-3">
+        <ActionForm action={updateLeaveStatusAction} className="grid gap-3">
           <input name="leave_id" type="hidden" value={row.leave_id} />
           <StatusWorkflowSelect name="hr_review_status" defaultValue={row.hr_review_status} />
           <StatusWorkflowSelect name="client_approval_status" defaultValue={row.client_approval_status} />
@@ -3851,13 +4221,13 @@ function LeaveStatusDialog({ row }: { row: RecordMap }) {
           <Select name="status" defaultValue={row.status || "submitted"}>
             <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="submitted">submitted</SelectItem>
-              <SelectItem value="approved">approved</SelectItem>
-              <SelectItem value="rejected">rejected</SelectItem>
+              <SelectItem value="submitted">Submitted</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
             </SelectContent>
           </Select>
           <Button type="submit">Save Status</Button>
-        </form>
+        </ActionForm>
       </DialogContent>
     </Dialog>
   );
@@ -3895,7 +4265,7 @@ function FinancePanel({
           </CardHeader>
           <CardContent className="grid gap-5">
             <OpportunityFormCard title="Create GR Record">
-            <form action={createGrRecordAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createGrRecordAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <NativeSelect name="client_id" options={clients} emptyLabel="Client" required />
               <NativeSelect name="project_id" options={projects} emptyLabel="Project" required />
               <Input name="period_month" placeholder="YYYY-MM" required />
@@ -3911,7 +4281,7 @@ function FinancePanel({
               </Select>
               <Textarea className="xl:col-span-4" name="work_summary" placeholder="Work summary" />
               <Button type="submit"><Plus className="h-4 w-4" /> Create GR</Button>
-            </form>
+            </ActionForm>
             </OpportunityFormCard>
             <DataTable
               headers={["ID", "Client", "Project", "Period", "Acceptance", "Status"]}
@@ -3938,7 +4308,7 @@ function FinancePanel({
           </CardHeader>
           <CardContent className="grid gap-5">
             <OpportunityFormCard title="Create Invoice">
-            <form action={createInvoiceDraftAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
+            <ActionForm action={createInvoiceDraftAction} className="grid grid-cols-5 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
               <NativeSelect name="gr_id" options={toOptions(grRecords, "gr_id", "period_month")} emptyLabel="GR record" required />
               <NativeSelect name="client_id" options={clients} emptyLabel="Client" required />
               <NativeSelect name="project_id" value={invoiceProjectId} onValueChange={handleInvoiceProjectChange} options={projects} emptyLabel="Project optional" />
@@ -3959,7 +4329,7 @@ function FinancePanel({
               <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
                 <Plus className="h-4 w-4" /> Create Invoice
               </Button>
-            </form>
+            </ActionForm>
             </OpportunityFormCard>
             <DataTable
               headers={["ID", "Invoice", "Client", "Subtotal", "Fees", "Tax/BPJS", "Total", "Status"]}
@@ -4007,7 +4377,9 @@ function DataTable({
   compact?: boolean;
 }) {
   return (
-    <div className={compact ? "overflow-hidden rounded-lg border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]" : "rounded-lg border"}>
+    // overflow-x-auto: dense enterprise tables scroll horizontally on small
+    // viewports instead of clipping or shrinking to unreadable sizes.
+    <div className={compact ? "overflow-x-auto rounded-lg border-0 shadow-[0_1px_3px_rgba(0,0,0,0.07)]" : "overflow-x-auto rounded-lg border"}>
       <Table>
         <TableHeader className={compact ? "sticky top-0 z-10 bg-[#fafafa]" : undefined}>
           <TableRow>
@@ -4137,7 +4509,9 @@ function NativeSelect({
   options: DashboardData["clients"] | DashboardData["projects"] | string[];
   emptyLabel?: string;
 }) {
-  const normalizedOptions = options.map((option) => typeof option === "string" ? { id: option, label: option } : option);
+  // String options are raw workflow codes (e.g. "open_gap") — show a readable label
+  // ("Open gap") while submitting the exact stored value.
+  const normalizedOptions = options.map((option) => typeof option === "string" ? { id: option, label: humanizeEnum(option) } : option);
   return (
     <Select
       name={name}
@@ -4158,6 +4532,12 @@ function NativeSelect({
       </SelectContent>
     </Select>
   );
+}
+
+function humanizeEnum(value: string) {
+  if (!value) return value;
+  const spaced = value.replaceAll("_", " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 function RoleSelect() {
@@ -4189,7 +4569,7 @@ function RoleSelect() {
       <SelectTrigger><SelectValue placeholder="Role" /></SelectTrigger>
       <SelectContent>
       {roles.map((role) => (
-        <SelectItem key={role} value={role}>{role}</SelectItem>
+        <SelectItem key={role} value={role}>{humanizeRole(role)}</SelectItem>
       ))}
       </SelectContent>
     </Select>
@@ -4201,9 +4581,9 @@ function NativeDecisionSelect() {
     <Select name="decision" required>
       <SelectTrigger><SelectValue placeholder="Decision" /></SelectTrigger>
       <SelectContent>
-        <SelectItem value="PROCEED">PROCEED</SelectItem>
-        <SelectItem value="HOLD">HOLD</SelectItem>
-        <SelectItem value="REJECTED">REJECTED</SelectItem>
+        <SelectItem value="PROCEED">Proceed</SelectItem>
+        <SelectItem value="HOLD">Hold</SelectItem>
+        <SelectItem value="REJECTED">Rejected</SelectItem>
       </SelectContent>
     </Select>
   );
@@ -4214,10 +4594,10 @@ function StatusWorkflowSelect({ name, defaultValue }: { name: string; defaultVal
     <Select name={name} defaultValue={defaultValue || "PENDING"}>
       <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
       <SelectContent>
-        <SelectItem value="PENDING">PENDING</SelectItem>
-        <SelectItem value="APPROVED">APPROVED</SelectItem>
-        <SelectItem value="REJECTED">REJECTED</SelectItem>
-        <SelectItem value="HOLD">HOLD</SelectItem>
+        <SelectItem value="PENDING">Pending</SelectItem>
+        <SelectItem value="APPROVED">Approved</SelectItem>
+        <SelectItem value="REJECTED">Rejected</SelectItem>
+        <SelectItem value="HOLD">On hold</SelectItem>
       </SelectContent>
     </Select>
   );
@@ -4228,8 +4608,8 @@ function StatusSelect() {
     <Select name="status" defaultValue="active">
       <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
       <SelectContent>
-        <SelectItem value="active">active</SelectItem>
-        <SelectItem value="inactive">inactive</SelectItem>
+        <SelectItem value="active">Active</SelectItem>
+        <SelectItem value="inactive">Inactive</SelectItem>
       </SelectContent>
     </Select>
   );
@@ -4277,21 +4657,22 @@ function formatDateTime(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+/**
+ * Every monetary display goes through the shared formatter, which always renders the
+ * currency together with the amount (see src/lib/format.ts). Call sites pass the
+ * registered currency of the record (scenario/option/project/invoice/ratecard row).
+ */
 function money(value?: string, currency?: string) {
-  const amount = Number(String(value || "0").replace(/,/g, ""));
-  if (!Number.isFinite(amount)) return value || "-";
-  if (!currency) {
-    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(amount);
-  }
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: currency === "IDR" ? 0 : 2,
-    }).format(amount);
-  } catch {
-    return `${currency} ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(amount)}`;
-  }
+  return formatMoney(value, currency);
+}
+
+/**
+ * Summed metrics across projects can only carry a currency label when every source
+ * project shares one registered currency; a sum of mixed currencies is not a real
+ * amount, so it is flagged instead of mislabeled.
+ */
+function mixedCurrencyCompact(total: number, singleCurrency: string) {
+  return singleCurrency ? formatMoneyCompact(total, singleCurrency) : "Mixed currencies";
 }
 
 function uniqueCurrencies(values: Array<string | undefined>) {
@@ -4319,6 +4700,7 @@ function avg(values: number[]) {
 function coerceSection(value?: string): Section {
   const allowed: Section[] = [
     "home",
+    "guide",
     "control",
     "opportunity",
     "cashflow",
@@ -4342,7 +4724,10 @@ function coerceSection(value?: string): Section {
   return allowed.includes(value as Section) ? (value as Section) : "home";
 }
 
-function getNav(role: RoleId, isOwner: boolean): { id: Section; label: string; icon: ReactNode; roles: RoleId[] }[] {
+type NavItem = { id: Section; label: string; icon: ReactNode; roles: RoleId[] };
+type NavGroup = { label: string; items: NavItem[] };
+
+function getNav(role: RoleId, isOwner: boolean): NavGroup[] {
   const opsDashboardRoles: RoleId[] = [
     "ROLE_SUPER_ADMIN",
     "ROLE_NEXUS_ADMIN",
@@ -4359,7 +4744,7 @@ function getNav(role: RoleId, isOwner: boolean): { id: Section; label: string; i
     "ROLE_VIEWER",
     "ROLE_AUDITOR",
   ];
-  const nav: { id: Section; label: string; icon: ReactNode; roles: RoleId[] }[] = [
+  const nav: NavItem[] = [
     { id: "home" as const, label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" />, roles: opsDashboardRoles },
     { id: "control" as const, label: "Admin Control Plane", icon: <Settings className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_TEMPLATE_ADMIN", "ROLE_AUDITOR"] },
     { id: "opportunity" as const, label: "Opportunity Analysis", icon: <Target className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_SOLUTION_ARCHITECT", "ROLE_COMMERCIAL_MANAGER", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_VIEWER"] },
@@ -4380,17 +4765,57 @@ function getNav(role: RoleId, isOwner: boolean): { id: Section; label: string; i
     { id: "overtime" as const, label: "Overtime", icon: <ClockIcon />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
     { id: "leave" as const, label: "Leave", icon: <CalendarDays className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR", "ROLE_CLIENT_APPROVER", "ROLE_EMPLOYEE"] },
     { id: "finance" as const, label: "GR & Invoices", icon: <ReceiptText className="h-4 w-4" />, roles: ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_PAYROLL_ADMIN_OPS", "ROLE_CLIENT_FINANCE_VIEWER"] },
+    { id: "guide" as const, label: "Knowledge Guide", icon: <BookOpen className="h-4 w-4" />, roles: [] },
   ];
-  return nav.filter((item) => isOwner || item.roles.includes(role));
+  const visible = nav.filter((item) => isOwner || item.id === "guide" || item.id === "home" || item.roles.includes(role));
+  const byId = new Map(visible.map((item) => [item.id, item]));
+  const pick = (ids: Section[]) => ids.map((id) => byId.get(id)).filter((item): item is NavItem => Boolean(item));
+  const groups: NavGroup[] = [
+    { label: "", items: pick(["home"]) },
+    { label: "Commercial Lifecycle", items: pick(["opportunity", "cashflow", "sales_submission", "order_ack"]) },
+    { label: "Delivery & Governance", items: pick(["execution", "governance"]) },
+    { label: "Workforce", items: pick(["candidates", "feedback", "onboarding", "talent", "timesheets", "overtime", "leave"]) },
+    { label: "Finance & Costing", items: pick(["ratecard", "finance"]) },
+    { label: "Administration", items: pick(["control", "users", "master", "documents"]) },
+    { label: "Help", items: pick(["guide"]) },
+  ];
+  return groups.filter((group) => group.items.length > 0);
 }
 
 function ClockIcon() {
   return <Timer className="h-4 w-4" />;
 }
 
+function descriptionFor(section: Section) {
+  return {
+    home: "Your work at a glance across the commercial and delivery lifecycle",
+    guide: "How to run sales, delivery governance, and workforce management in Sevenfold",
+    control: "Configurable framework settings, approval thresholds, and audit trail",
+    opportunity: "Create, analyze, and approve opportunities before commercial decisions",
+    cashflow: "Model deal economics and approve the cashflow option for each opportunity",
+    sales_submission: "Decide whether to submit the proposal — Sponsor approval required",
+    order_ack: "Validate the received PO/contract against the approved SDS baseline",
+    execution: "Projects, gates, sites, resources, and commercial tracking after SDOA",
+    governance: "Change requests, quality incidents, and governance records across projects",
+    talent: "Readiness, succession, and retention risk for imported talent data",
+    ratecard: "Hourly and blended resource costs by type, location, and currency",
+    users: "Provision access and role scope for your organization",
+    master: "Clients and projects that every workflow builds on",
+    candidates: "Register candidates and submit them for client review",
+    feedback: "Capture client decisions on submitted candidates",
+    onboarding: "Document acknowledgements and readiness gates for new resources",
+    documents: "Templates and document references with controlled visibility",
+    timesheets: "Submission, review, and client approval of working hours",
+    overtime: "Overtime requests, validation, and client approval",
+    leave: "Leave requests, HR review, and timesheet impact",
+    finance: "Service acceptance records and invoice drafts per client",
+  }[section];
+}
+
 function titleFor(section: Section) {
   return {
     home: "Operations Dashboard",
+    guide: "Knowledge Guide",
     control: "Administration Control Plane",
     opportunity: "Opportunity Analysis",
     cashflow: "Cashflow Analysis",

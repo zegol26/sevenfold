@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+// Production-friendly route aliases for dashboard sections.
 
 const routeSections: Record<string, string> = {
   "/login": "home",
@@ -12,6 +13,7 @@ const routeSections: Record<string, string> = {
   "/operations/overtime": "overtime",
   "/operations/leave": "leave",
   "/finance/gr-invoices": "finance",
+  "/help/guide": "guide",
 };
 
 export function proxy(request: NextRequest) {
@@ -37,5 +39,6 @@ export const config = {
     "/operations/overtime",
     "/operations/leave",
     "/finance/gr-invoices",
+    "/help/guide",
   ],
 };
