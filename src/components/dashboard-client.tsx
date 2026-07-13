@@ -2123,7 +2123,14 @@ const SPONSOR_EQUIVALENT_ROLES: RoleId[] = ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMI
 
 function SdsPanel({ data }: { data: DashboardData }) {
   const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
-  const opportunities = analysis.opportunities.map((opportunity) => ({ id: opportunity.opportunity_id, label: `${opportunity.opportunity_id} - ${opportunity.customer_name}` }));
+  // Scoped to opportunities that actually have an approved cashflow option -
+  // createSdsAction requires this server-side, so listing every opportunity here
+  // (regardless of eligibility) let users pick one that would always be rejected
+  // with a correct-but-confusing "Approved cashflow option is required" error.
+  const approvedCashflowOpportunityIds = new Set(analysis.cashflowOptions.filter((option) => option.status === "approved").map((option) => option.opportunity_id));
+  const opportunities = analysis.opportunities
+    .filter((opportunity) => approvedCashflowOpportunityIds.has(opportunity.opportunity_id))
+    .map((opportunity) => ({ id: opportunity.opportunity_id, label: `${opportunity.opportunity_id} - ${opportunity.customer_name}` }));
   const isSponsorViewer = SPONSOR_EQUIVALENT_ROLES.includes(data.user?.role_id as RoleId);
   const pendingForSponsor = analysis.sdsRecords.filter((sds) => sds.decision === "pending");
 
@@ -2137,9 +2144,15 @@ function SdsPanel({ data }: { data: DashboardData }) {
         </Alert>
       )}
       <OpportunityFormCard title="Create Sales Decision for Submission">
+        {opportunities.length === 0 && (
+          <Alert className="mb-3">
+            <AlertTitle>No opportunities eligible yet</AlertTitle>
+            <AlertDescription>SDS requires an approved cashflow option. Approve one under Cashflow Analysis first, then the opportunity will show up here.</AlertDescription>
+          </Alert>
+        )}
         <ActionForm action={createSdsAction} className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-sm:grid-cols-1">
           <Select name="opportunity_id" required>
-            <SelectTrigger><SelectValue placeholder="Opportunity" /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder="Approved-Cashflow Opportunity" /></SelectTrigger>
             <SelectContent>{opportunities.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}</SelectContent>
           </Select>
           <Select name="presenter_role" required>

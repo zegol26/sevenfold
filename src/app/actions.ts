@@ -1330,7 +1330,10 @@ export async function createSdsAction(formData: FormData) {
     },
   });
   if (!opportunity) throw new Error("Opportunity not found");
-  if (!opportunity.cashflowOptions.some((option) => option.status === "approved")) throw new Error("Approved cashflow option is required before SDS.");
+  if (!opportunity.cashflowOptions.some((option) => option.status === "approved")) {
+    const statuses = opportunity.cashflowOptions.map((option) => `${option.optionCode} (${option.status})`).join(", ") || "none created yet";
+    throw new Error(`Approved cashflow option is required before SDS. Opportunity ${opportunity.opportunityCode} has: ${statuses}. Approve one under Cashflow Analysis first.`);
+  }
   const dealType = String(opportunity.dealType || "").toLowerCase();
   const presenterRole = getValue(formData, "presenter_role");
   if (["high", "very high"].includes(dealType) && presenterRole !== "Program Director") {

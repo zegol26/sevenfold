@@ -11,6 +11,15 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.5",
+    date: "2026-07-14",
+    slogan: "Create SDS opportunity picker only lists opportunities that actually have an approved cashflow option.",
+    highlights: [
+      "Fixed: Create Sales Decision for Submission listed every opportunity regardless of eligibility, so it was easy to pick one without an approved cashflow option and hit a technically-correct but confusing 'Approved cashflow option is required before SDS' error - now scoped the same way the SDOA picker is already scoped to approved SDS.",
+      "The server-side error (if it's ever hit some other way) now names the opportunity code and lists its cashflow options with their statuses, instead of a bare generic message.",
+    ],
+  },
+  {
     version: "0.3.4",
     date: "2026-07-14",
     slogan: "Every remaining Server Action now shows its real error instead of the generic 'could not be completed' banner.",
