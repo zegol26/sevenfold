@@ -11,6 +11,16 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.3",
+    date: "2026-07-14",
+    slogan: "Account Manager can now submit a cashflow option for Sponsor approval.",
+    highlights: [
+      "Cashflow Analysis tab is now visible to Account Manager (was invisible to that role since the tab was built - not a regression).",
+      "Account Manager can create/submit a cashflow option for an opportunity; approval remains separate - now grantable by Sponsor as well as Commercial Manager/Finance Controller/admins, so Account Manager cannot approve their own submission.",
+      "createCashflowOptionAction and approveCashflowOptionAction converted to the return-based error pattern (see 0.3.2) so permission/validation failures here show their real reason.",
+    ],
+  },
+  {
     version: "0.3.2",
     date: "2026-07-14",
     slogan: "Failed saves now tell you why, instead of a generic 'could not be completed' banner.",

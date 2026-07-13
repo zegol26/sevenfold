@@ -1097,8 +1097,12 @@ export async function createPricingDecisionAction(formData: FormData) {
 }
 
 export async function createCashflowOptionAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
-  requireCommercialManager(actor);
+  // Account Manager can submit a cashflow option for approval (owns the deal),
+  // but approval itself stays with requireCommercialManager's roles + Sponsor -
+  // see approveCashflowOptionAction. Keeps creation and sign-off separated.
+  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_ACCOUNT_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
   const opportunity = await getApprovedOpportunityForCashflow(organizationId, getValue(formData, "opportunity_id"));
   const grossInvoice = moneyOrZero(getValue(formData, "gross_invoice"));
@@ -1149,6 +1153,9 @@ export async function createCashflowOptionAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: option.optionCode, after: { opportunity: opportunity.opportunityCode, cashGap: calculation.cashGap, marginAmount: calculation.marginAmount, npv: calculation.npv } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateCashflowOptionAction(formData: FormData) {
@@ -1211,8 +1218,12 @@ export async function updateCashflowOptionAction(formData: FormData) {
 }
 
 export async function approveCashflowOptionAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
-  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER"]);
+  // Sponsor added alongside the existing Commercial Manager/admin approvers so
+  // Account Manager's newly-created cashflow options (see createCashflowOptionAction)
+  // have a real approval path without Account Manager approving their own submission.
+  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_SPONSOR"]);
   const organizationId = requireOrganizationId(actor);
   const option = await getDb().cashflowOption.findFirst({
     where: { optionCode: getValue(formData, "option_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
@@ -1223,8 +1234,11 @@ export async function approveCashflowOptionAction(formData: FormData) {
     where: { id: option.id },
     data: { status: getValue(formData, "decision") || "approved", approvedBy: actor?.email || getValue(formData, "approver"), approvedAt: new Date() },
   });
-  await writeAudit({ actorId: actor?.id, action: "APPROVE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: option.optionCode, before: option, after: updated, reason: getValue(formData, "comments") || "Commercial Manager approval" });
+  await writeAudit({ actorId: actor?.id, action: "APPROVE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: option.optionCode, before: option, after: updated, reason: getValue(formData, "comments") || `${actor?.role.code || "Approver"} approval` });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createSdsAction(formData: FormData) {
