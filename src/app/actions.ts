@@ -163,10 +163,6 @@ function requireOpportunityManager(actor: Awaited<ReturnType<typeof currentActor
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_SOLUTION_ARCHITECT", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
 }
 
-function requireCommercialManager(actor: Awaited<ReturnType<typeof currentActor>>["user"]) {
-  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER"]);
-}
-
 function requireSponsor(actor: Awaited<ReturnType<typeof currentActor>>["user"]) {
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR"]);
 }
@@ -225,6 +221,7 @@ async function requireSignedInSession() {
 }
 
 export async function loginAction(formData: FormData) {
+ try {
   const email = getValue(formData, "email").toLowerCase();
   const password = getValue(formData, "password");
   requireValue(email, "Email");
@@ -250,14 +247,22 @@ export async function loginAction(formData: FormData) {
     roleId: user.role.code,
   });
   redirect("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function logoutAction() {
+ try {
   await destroySession();
   redirect("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createUserAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
 
@@ -291,9 +296,13 @@ export async function createUserAction(formData: FormData) {
     after: { email: created.email, role_id: role.code, status: created.status },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateUserAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
 
@@ -327,9 +336,13 @@ export async function updateUserAction(formData: FormData) {
     after: { status: updated.status, role_id: role.code },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function seedFrameworkControlPlaneAction() {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
   const organizationId = requireOrganizationId(actor);
@@ -348,9 +361,13 @@ export async function seedFrameworkControlPlaneAction() {
   await writeAudit({ actorId: actor?.id, action: "SEED_FRAMEWORK_CONTROL_PLANE", entityType: "system_setting", entityId: setting.key, after: value, reason: "Seed defaults from business plan Rev2" });
   revalidateTag(FRAMEWORK_SETTINGS_CACHE_TAG, "max");
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function addFrameworkItemAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
   const organizationId = requireOrganizationId(actor);
@@ -559,9 +576,13 @@ export async function addFrameworkItemAction(formData: FormData) {
   }
   await saveFrameworkControlPlaneForAction(organizationId, current, actor?.id, `ADD_FRAMEWORK_${String(group).toUpperCase()}`, before, reason, approvalReference);
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateFrameworkControlPlaneJsonAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
   const organizationId = requireOrganizationId(actor);
@@ -578,6 +599,9 @@ export async function updateFrameworkControlPlaneJsonAction(formData: FormData) 
     getValue(formData, "approval_reference"),
   );
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 async function getFrameworkControlPlaneForAction(organizationId: string) {
@@ -611,6 +635,7 @@ async function saveFrameworkControlPlaneForAction(
 }
 
 export async function createClientAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const code = getValue(formData, "client_code").toUpperCase();
@@ -632,9 +657,13 @@ export async function createClientAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_CLIENT", entityType: "client", entityId: client.legacySourceId || client.id, after: { code, name: client.name } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createProjectAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const client = await findClientByLegacyId(organizationId, getValue(formData, "client_id"));
@@ -685,9 +714,13 @@ export async function createProjectAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_PROJECT", entityType: "project", entityId: project.legacySourceId || project.id, after: { code, name: project.name, currency, framework_version: frameworkVersion, template_versions: activeTemplateSnapshot } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function uploadTemplateAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireTemplateAdmin(actor);
   const organizationId = requireOrganizationId(actor);
@@ -711,9 +744,13 @@ export async function uploadTemplateAction(formData: FormData) {
     actorId: actor?.id,
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function transitionTemplateAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireTemplateAdmin(actor);
   const organizationId = requireOrganizationId(actor);
@@ -730,9 +767,13 @@ export async function transitionTemplateAction(formData: FormData) {
     reason: getValue(formData, "reason") || `Template ${action}`,
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createOpportunityAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -781,9 +822,13 @@ export async function createOpportunityAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_OPPORTUNITY", entityType: "opportunity", entityId: opportunity.opportunityCode, after: { opportunityCode, frameworkVersion } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateOpportunityAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -805,6 +850,9 @@ export async function updateOpportunityAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_OPPORTUNITY", entityType: "opportunity", entityId: updated.opportunityCode, before: existing, after: updated });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function transitionOpportunityStatusAction(formData: FormData) {
@@ -858,6 +906,7 @@ export async function transitionOpportunityStatusAction(formData: FormData) {
 }
 
 export async function cloneOpportunityAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_ACCOUNT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -948,9 +997,13 @@ export async function cloneOpportunityAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CLONE_OPPORTUNITY", entityType: "opportunity", entityId: clone.opportunityCode, before: { source: source.opportunityCode }, after: { clone: clone.opportunityCode, frameworkVersion } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createProposalScenarioAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SOLUTION_ARCHITECT", "ROLE_ACCOUNT_MANAGER", "ROLE_COMMERCIAL_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
@@ -968,6 +1021,9 @@ export async function createProposalScenarioAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_PROPOSAL_SCENARIO", entityType: "proposal_scenario", entityId: scenario.scenarioCode, after: { opportunity: opportunity.opportunityCode } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateProposalScenarioAction(formData: FormData) {
@@ -1044,6 +1100,7 @@ export async function createCommodityCostLineAction(formData: FormData) {
 }
 
 export async function createOpportunityRiskAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireOpportunityManager(actor);
   const organizationId = requireOrganizationId(actor);
@@ -1072,6 +1129,9 @@ export async function createOpportunityRiskAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_OPPORTUNITY_RISK", entityType: "risk_register", entityId: risk.riskCode, after: { opportunity: opportunity.opportunityCode, exposureAfter } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createPricingDecisionAction(formData: FormData) {
@@ -1108,7 +1168,7 @@ export async function createCashflowOptionAction(formData: FormData) {
  try {
   const { user: actor } = await currentActor();
   // Account Manager can submit a cashflow option for approval (owns the deal),
-  // but approval itself stays with requireCommercialManager's roles + Sponsor -
+  // but approval itself stays with Commercial Manager/admin roles + Sponsor -
   // see approveCashflowOptionAction. Keeps creation and sign-off separated.
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_ACCOUNT_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
@@ -1167,8 +1227,11 @@ export async function createCashflowOptionAction(formData: FormData) {
 }
 
 export async function updateCashflowOptionAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
-  requireCommercialManager(actor);
+  // Matches createCashflowOptionAction's allowed roles - the Account Manager who
+  // creates an unapproved option must also be able to edit it before sign-off.
+  requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_COMMERCIAL_MANAGER", "ROLE_FINANCE_CONTROLLER", "ROLE_ACCOUNT_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
   const option = await getDb().cashflowOption.findFirst({
     where: { optionCode: getValue(formData, "option_id"), opportunity: { organizationId, opportunityCode: getValue(formData, "opportunity_id") } },
@@ -1223,6 +1286,9 @@ export async function updateCashflowOptionAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_CASHFLOW_OPTION", entityType: "cashflow_option", entityId: updated.optionCode, before: option, after: { cashGap: calculation.cashGap, marginAmount: calculation.marginAmount, npv: calculation.npv } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function approveCashflowOptionAction(formData: FormData) {
@@ -1361,6 +1427,7 @@ function deriveSdsSummary(opportunity: OpportunityForSdsDerivation) {
 }
 
 export async function decideSdsAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireSponsor(actor);
   const organizationId = requireOrganizationId(actor);
@@ -1372,9 +1439,13 @@ export async function decideSdsAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "DECIDE_SDS", entityType: "sds", entityId: sds.id, before: sds, after: updated, reason: getValue(formData, "comments") });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createSdoaAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_CONTRACT_LEGAL", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -1413,9 +1484,13 @@ export async function createSdoaAction(formData: FormData) {
   }
   await writeAudit({ actorId: actor?.id, action: "CREATE_SDOA", entityType: "sdoa", entityId: sdoa.id, after: { opportunity: opportunity.opportunityCode, po: sdoa.receivedPoNumber } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function decideSdoaAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireSponsor(actor);
   const organizationId = requireOrganizationId(actor);
@@ -1431,9 +1506,13 @@ export async function decideSdoaAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "DECIDE_SDOA", entityType: "sdoa", entityId: sdoa.id, before: sdoa, after: updated, reason: getValue(formData, "comments") });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createExecutionProjectFromSdoaAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -1490,9 +1569,13 @@ export async function createExecutionProjectFromSdoaAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_PROJECT_FROM_APPROVED_SDOA", entityType: "project_execution", entityId: projectId, after: project });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateProjectGateAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -1517,9 +1600,13 @@ export async function updateProjectGateAction(formData: FormData) {
   await saveProjectExecutionRegistry(organizationId, { ...registry, gates: nextGates });
   await writeAudit({ actorId: actor?.id, action: "REQUEST_PROJECT_GATE_APPROVAL", entityType: "project_gate", entityId: gateId, after: updatedGate });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function decideProjectGateAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireSponsor(actor);
   const organizationId = requireOrganizationId(actor);
@@ -1547,9 +1634,13 @@ export async function decideProjectGateAction(formData: FormData) {
   await saveProjectExecutionRegistry(organizationId, { ...registry, gates: nextGates });
   await writeAudit({ actorId: actor?.id, action: "DECIDE_PROJECT_GATE", entityType: "project_gate", entityId: gateId, after: updatedGate, reason: getValue(formData, "comments") });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function upsertSiteHandlerAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
@@ -1575,9 +1666,13 @@ export async function upsertSiteHandlerAction(formData: FormData) {
   await saveProjectExecutionRegistry(organizationId, { ...registry, sites });
   await writeAudit({ actorId: actor?.id, action: "UPSERT_SITE_HANDLER", entityType: "site_handler", entityId: `${site.projectId}:${site.siteClusterId}`, after: site });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function upsertProjectResourceDemandAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_RESOURCE_MANAGER", "ROLE_HR_ADMIN", "ROLE_HR_ADMINISTRATOR"]);
   const organizationId = requireOrganizationId(actor);
@@ -1608,9 +1703,13 @@ export async function upsertProjectResourceDemandAction(formData: FormData) {
   await saveProjectExecutionRegistry(organizationId, { ...registry, resourceDemands });
   await writeAudit({ actorId: actor?.id, action: "UPSERT_PROJECT_RESOURCE_DEMAND", entityType: "project_resource_demand", entityId: demandId, after: demand });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function upsertCommercialProcurementFlowAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROCUREMENT_MANAGER", "ROLE_FINANCE_CONTROLLER"]);
   const organizationId = requireOrganizationId(actor);
@@ -1643,9 +1742,13 @@ export async function upsertCommercialProcurementFlowAction(formData: FormData) 
   await saveProjectExecutionRegistry(organizationId, { ...registry, commercialFlows });
   await writeAudit({ actorId: actor?.id, action: "UPSERT_COMMERCIAL_PROCUREMENT_FLOW", entityType: "commercial_procurement_flow", entityId: flowId, after: flow });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function decideCommercialProcurementFlowAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_SPONSOR", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER", "ROLE_COMMERCIAL_MANAGER", "ROLE_PROCUREMENT_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
@@ -1657,9 +1760,13 @@ export async function decideCommercialProcurementFlowAction(formData: FormData) 
   await saveProjectExecutionRegistry(organizationId, { ...registry, commercialFlows: registry.commercialFlows.map((item) => item.flowId === flowId ? updated : item) });
   await writeAudit({ actorId: actor?.id, action: "DECIDE_COMMERCIAL_PROCUREMENT_FLOW", entityType: "commercial_procurement_flow", entityId: flowId, before, after: updated, reason: getValue(formData, "comments") });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function importSiteListExcelAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN", "ROLE_PROJECT_MANAGER", "ROLE_PROGRAM_DIRECTOR", "ROLE_PROJECT_FINANCE_MANAGER"]);
   const organizationId = requireOrganizationId(actor);
@@ -1687,6 +1794,9 @@ export async function importSiteListExcelAction(formData: FormData) {
   await saveProjectExecutionRegistry(organizationId, { ...registry, sites: [...sites, ...existing] });
   await writeAudit({ actorId: actor?.id, action: "IMPORT_SITE_LIST_EXCEL", entityType: "site_handler", entityId: file.name, after: { imported: sites.length } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 async function getApprovedOpportunityForCashflow(organizationId: string, opportunityCode: string) {
@@ -1719,6 +1829,7 @@ function cashflowDetailFromForm(formData: FormData, optionId: string) {
 }
 
 export async function createCandidateAction(formData: FormData) {
+ try {
   const session = await requireSignedInSession();
   const actor = await findUserByEmail(session.email);
   const organizationId = requireOrganizationId(actor);
@@ -1762,9 +1873,13 @@ export async function createCandidateAction(formData: FormData) {
     },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function submitCandidateAction(formData: FormData) {
+ try {
   const session = await requireSignedInSession();
   const actor = await findUserByEmail(session.email);
   const candidateId = getValue(formData, "candidate_id");
@@ -1814,9 +1929,13 @@ export async function submitCandidateAction(formData: FormData) {
     },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateCandidateAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   if (!["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN"].includes(actor?.role.code || "")) {
     throw new Error("Only admin roles can edit candidates.");
@@ -1851,9 +1970,13 @@ export async function updateCandidateAction(formData: FormData) {
     after: { full_name: updated.fullName, status: updated.status },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function submitFeedbackAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const decision = getValue(formData, "decision");
@@ -1894,9 +2017,13 @@ export async function submitFeedbackAction(formData: FormData) {
     after: { feedback_id: feedback.legacySourceId, decision },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function startOnboardingFromCandidateAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const candidateId = getValue(formData, "candidate_id");
@@ -1930,9 +2057,13 @@ export async function startOnboardingFromCandidateAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "START_RESOURCE_ONBOARDING", entityType: "employee", entityId: employee.legacySourceId || employee.id, after: { candidate_id: candidateId } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function markOnboardingStepAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const employeeId = getValue(formData, "employee_id");
@@ -1985,9 +2116,13 @@ export async function markOnboardingStepAction(formData: FormData) {
   });
 
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateEmployeeCommercialAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
@@ -2031,9 +2166,13 @@ export async function updateEmployeeCommercialAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_EMPLOYEE_COMMERCIAL", entityType: "employee", entityId: updated.legacySourceId || updated.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createDocumentMetadataAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   if (!["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN"].includes(actor?.role.code || "")) {
     throw new Error("Only Super Admin or Nexus Admin can manage document metadata.");
@@ -2066,9 +2205,13 @@ export async function createDocumentMetadataAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_DOCUMENT_METADATA", entityType: "document", entityId: doc.legacySourceId || doc.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateDocumentMetadataAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   if (!["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN"].includes(actor?.role.code || "")) {
     throw new Error("Only Super Admin or Nexus Admin can manage document metadata.");
@@ -2101,9 +2244,13 @@ export async function updateDocumentMetadataAction(formData: FormData) {
     after: { file_name: updated.fileName, drive_file_id: updated.driveFileId },
   });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createTimesheetAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
@@ -2127,9 +2274,13 @@ export async function createTimesheetAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_TIMESHEET", entityType: "timesheet", entityId: timesheet.legacySourceId || timesheet.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateTimesheetStatusAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const id = getValue(formData, "timesheet_id");
   const existing = await getDb().timesheet.findFirst({ where: { OR: [{ legacySourceId: id }, { id }] } });
@@ -2146,9 +2297,13 @@ export async function updateTimesheetStatusAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_TIMESHEET_STATUS", entityType: "timesheet", entityId: updated.legacySourceId || updated.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createOvertimeRequestAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
@@ -2173,9 +2328,13 @@ export async function createOvertimeRequestAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_OVERTIME_REQUEST", entityType: "overtime", entityId: overtime.legacySourceId || overtime.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateOvertimeStatusAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const id = getValue(formData, "overtime_id");
   const existing = await getDb().overtimeRequest.findFirst({ where: { OR: [{ legacySourceId: id }, { id }] } });
@@ -2191,9 +2350,13 @@ export async function updateOvertimeStatusAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_OVERTIME_STATUS", entityType: "overtime", entityId: updated.legacySourceId || updated.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createLeaveRequestAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
@@ -2218,9 +2381,13 @@ export async function createLeaveRequestAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_LEAVE_REQUEST", entityType: "leave", entityId: leave.legacySourceId || leave.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createProjectApplicationAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const employee = await findResourceByLegacyId(organizationId, getValue(formData, "employee_id"), ResourceKind.EMPLOYEE);
@@ -2240,9 +2407,13 @@ export async function createProjectApplicationAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_PROJECT_APPLICATION", entityType: "project_application", entityId: application.legacySourceId || application.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function updateLeaveStatusAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const id = getValue(formData, "leave_id");
   const existing = await getDb().leaveRequest.findFirst({ where: { OR: [{ legacySourceId: id }, { id }] } });
@@ -2259,9 +2430,13 @@ export async function updateLeaveStatusAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "UPDATE_LEAVE_STATUS", entityType: "leave", entityId: updated.legacySourceId || updated.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createGrRecordAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const client = await findClientByLegacyId(organizationId, getValue(formData, "client_id"));
@@ -2281,9 +2456,13 @@ export async function createGrRecordAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_GR_RECORD", entityType: "gr_record", entityId: gr.legacySourceId || gr.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createInvoiceDraftAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   const organizationId = requireOrganizationId(actor);
   const client = await findClientByLegacyId(organizationId, getValue(formData, "client_id"));
@@ -2316,9 +2495,13 @@ export async function createInvoiceDraftAction(formData: FormData) {
   });
   await writeAudit({ actorId: actor?.id, action: "CREATE_INVOICE_DRAFT", entityType: "invoice", entityId: invoice.legacySourceId || invoice.id });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createChangeRequestAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireDeliveryGovernanceRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2350,9 +2533,13 @@ export async function createChangeRequestAction(formData: FormData) {
   await saveDeliveryGovernanceRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "CREATE_CHANGE_REQUEST", entityType: "change_request", entityId: record.crId, after: record });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function decideChangeRequestAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireSponsor(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2386,9 +2573,13 @@ export async function decideChangeRequestAction(formData: FormData) {
   }
   await writeAudit({ actorId: actor?.id, action: "DECIDE_CHANGE_REQUEST", entityType: "change_request", entityId: crId, before, after: updated, reason: getValue(formData, "comments") });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createQualityIncidentAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireDeliveryGovernanceRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2419,9 +2610,13 @@ export async function createQualityIncidentAction(formData: FormData) {
   await saveDeliveryGovernanceRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "CREATE_QUALITY_INCIDENT", entityType: "quality_incident", entityId: record.incidentId, after: record });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createGovernanceRecordAction(formData: FormData) {
+ try {
   const { session, user: actor } = await currentActor();
   requireDeliveryGovernanceRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2458,9 +2653,13 @@ export async function createGovernanceRecordAction(formData: FormData) {
   await saveDeliveryGovernanceRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "CREATE_GOVERNANCE_RECORD", entityType: "governance_record", entityId: record.governanceId, after: record });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function createTalentRecordAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireTalentPlanningRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2489,9 +2688,13 @@ export async function createTalentRecordAction(formData: FormData) {
   await saveTalentPlanningRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "UPSERT_TALENT_RECORD", entityType: "talent_planning", entityId: record.talentId, after: record });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function importTalentPlanningExcelAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireTalentPlanningRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2522,9 +2725,13 @@ export async function importTalentPlanningExcelAction(formData: FormData) {
   await saveTalentPlanningRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "IMPORT_TALENT_PLANNING_EXCEL", entityType: "talent_planning", entityId: file.name, after: { imported: imported.length } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function upsertRatecardResourceAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireRatecardRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2557,9 +2764,13 @@ export async function upsertRatecardResourceAction(formData: FormData) {
   await saveRatecardRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "UPSERT_RATECARD_RESOURCE", entityType: "ratecard", entityId: record.ratecardId, after: record });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function importRatecardExcelAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireRatecardRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2592,9 +2803,13 @@ export async function importRatecardExcelAction(formData: FormData) {
   await saveRatecardRegistry(organizationId, { ...registry, resources: [...imported, ...registry.resources.filter((item) => !imported.some((row) => row.ratecardId === item.ratecardId))] });
   await writeAudit({ actorId: actor?.id, action: "IMPORT_RATECARD_EXCEL", entityType: "ratecard", entityId: file.name, after: { imported: imported.length } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function importFrameworkSettingsExcelAction(formData: FormData) {
+ try {
   const { user: actor } = await currentActor();
   requireActorRole(actor, ["ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
   const organizationId = requireOrganizationId(actor);
@@ -2621,9 +2836,13 @@ export async function importFrameworkSettingsExcelAction(formData: FormData) {
   }
   await saveFrameworkControlPlaneForAction(organizationId, current, actor?.id, "IMPORT_FRAMEWORK_SETTINGS_EXCEL", before, getValue(formData, "reason") || "Admin optional framework settings import", getValue(formData, "approval_reference"));
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 export async function manualRefreshFxRatesAction() {
+ try {
   const { user: actor } = await currentActor();
   requireRatecardRole(actor);
   const organizationId = requireOrganizationId(actor);
@@ -2639,6 +2858,9 @@ export async function manualRefreshFxRatesAction() {
   await saveRatecardRegistry(organizationId, registry);
   await writeAudit({ actorId: actor?.id, action: "MANUAL_REFRESH_FX_RATES", entityType: "ratecard", entityId: "fx_rates", after: { source: "fallback", fxUpdatedAt: now } });
   revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
 }
 
 function workbookRows(arrayBuffer: ArrayBuffer) {

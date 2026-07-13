@@ -11,6 +11,16 @@ export type ChangelogEntry = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.4",
+    date: "2026-07-14",
+    slogan: "Every remaining Server Action now shows its real error instead of the generic 'could not be completed' banner.",
+    highlights: [
+      "0.3.2 converted 3 actions to the return-based error pattern and 0.3.3 converted 2 more; this release converts the other 55, closing out the migration across the whole opportunity/cashflow workflow, onboarding, timesheets, GR/invoicing, and admin control-plane forms.",
+      "Fixed the bug this surfaced: Opportunity approval-workflow transitions (Submit, Approve Pricing, Release to Cashflow, Approve) were throwing instead of returning, so a blocked transition (e.g. missing an approved Pricing Decision or approved cashflow option) silently showed the generic banner with no way to tell what was missing - opportunities could get stuck with no visible reason.",
+      "Fixed Edit Cashflow Option (updateCashflowOptionAction) requiring Commercial Manager/Finance Controller/admin, excluding the Account Manager role that 0.3.3 allowed to create cashflow options in the first place - Account Manager can now edit their own unapproved option too.",
+    ],
+  },
+  {
     version: "0.3.3",
     date: "2026-07-14",
     slogan: "Account Manager can now submit a cashflow option for Sponsor approval.",
