@@ -312,9 +312,23 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
         }))
       : [],
     roles: roles.map((role) => ({ id: role.code, label: role.name })),
+    // Role-pickers elsewhere (e.g. "Create Project From Approved SDOA" -> Sponsor,
+    // Project Manager) filter this list by an exact role code match (see
+    // peopleForRoles in dashboard-client.tsx). With multi-role assignment, a person
+    // can hold a role as a secondary assignment (not just their primary User.roleId),
+    // so emit one directory entry per active role they hold - otherwise someone made
+    // a Sponsor via a second role would never show up in the Sponsor dropdown.
     team_directory: users
       .filter((row) => row.status === "ACTIVE")
-      .map((row) => ({ id: row.fullName, label: `${row.fullName} — ${row.role.code.replace(/^ROLE_/, "").replaceAll("_", " ")}`, meta: row.role.code })),
+      .flatMap((row) => {
+        const roleCodes = roleCodesByUserId.get(row.id) || [row.role.code];
+        const uniqueRoleCodes = Array.from(new Set(roleCodes));
+        return uniqueRoleCodes.map((roleCode) => ({
+          id: row.fullName,
+          label: `${row.fullName} — ${roleCode.replace(/^ROLE_/, "").replaceAll("_", " ")}`,
+          meta: roleCode,
+        }));
+      }),
     clients: clientOptions,
     projects: projectOptions,
     candidates: scopedCandidates,
