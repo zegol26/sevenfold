@@ -126,6 +126,8 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     frameworkControlPlane,
     templateRegistry,
     auditLogs,
+    roles,
+    activeUserRoles,
   ] = await Promise.all([
     db.user.findMany({
       where: { status: { not: "DELETED" }, organizationId },
@@ -154,7 +156,21 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
     getFrameworkControlPlane(organizationId),
     getTemplateRegistry(organizationId),
     db.auditLog.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" }, take: 50, include: { actor: true } }),
+    db.role.findMany({ where: { status: "active" }, orderBy: { name: "asc" } }),
+    // Multi-role assignment (Users panel): active UserRole rows scoped to this org's
+    // users, used to render each user's full role set as chips / checkbox defaults.
+    db.userRole.findMany({ where: { status: "active", user: { organizationId } }, include: { role: true } }),
   ]);
+
+  // Multi-role assignment: group each user's active role codes (in assignment
+  // order), so the primary role (User.roleId, still the first entry) is always
+  // included even for users who predate the UserRole rollout.
+  const roleCodesByUserId = new Map<string, string[]>();
+  activeUserRoles.forEach((assignment) => {
+    const codes = roleCodesByUserId.get(assignment.userId) || [];
+    codes.push(assignment.role.code);
+    roleCodesByUserId.set(assignment.userId, codes);
+  });
 
   const latestFeedbackByCandidate = new Map(feedbacks.map((feedback) => [feedback.candidateId, feedback]));
   const candidates = resources
@@ -287,7 +303,15 @@ async function getDashboardDataFromDb(email: string): Promise<DashboardData> {
       leaveRequests: scopedLeaveRequests.length,
       invoices: scopedInvoices.length,
     },
-    users: isSuperAdmin ? users.map(userToRecord) : [],
+    users: isSuperAdmin
+      ? users.map((row) => ({
+          ...userToRecord(row),
+          // Comma-separated role codes for this user (falls back to just the primary
+          // role for users with no UserRole rows yet, e.g. pre-multi-role accounts).
+          role_ids: (roleCodesByUserId.get(row.id) || [row.role.code]).join(","),
+        }))
+      : [],
+    roles: roles.map((role) => ({ id: role.code, label: role.name })),
     team_directory: users
       .filter((row) => row.status === "ACTIVE")
       .map((row) => ({ id: row.fullName, label: `${row.fullName} — ${row.role.code.replace(/^ROLE_/, "").replaceAll("_", " ")}`, meta: row.role.code })),
@@ -814,6 +838,7 @@ function resourceToCandidateRecord(resource: {
   candidateStage: string | null;
   status: string;
   createdAt: Date;
+  cvDriveLink?: string | null;
 }, feedback?: {
   rating: number | null;
   decision: string;
@@ -829,6 +854,7 @@ function resourceToCandidateRecord(resource: {
     project_id: resource.assignedProjectLegacyId || "",
     position_applied: resource.position || "",
     interview_status: resource.candidateStage || "",
+    cv_drive_link: resource.cvDriveLink || "",
     rating: feedback?.rating ? String(feedback.rating) : "",
     decision: feedback?.decision || "",
     decision_reason: feedback?.rejectionReason || feedback?.comment || "",

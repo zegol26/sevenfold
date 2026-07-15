@@ -18,7 +18,7 @@ import { createDefaultGates, getProjectExecutionRegistryForMutation, saveProject
 import { calculateRatecardRecord, fallbackFxRates, fxCacheIsFresh, getRatecardRegistryForMutation, saveRatecardRegistry } from "@/services/ratecardService";
 import { getTalentPlanningRegistryForMutation, saveTalentPlanningRegistry } from "@/services/talentPlanningService";
 import { getActiveTemplateSnapshot, transitionTemplate, uploadTemplate } from "@/services/templateManagementService";
-import { findUserByEmail } from "@/services/userService";
+import { findUserByEmail, setUserRoles } from "@/services/userService";
 
 function getValue(formData: FormData, key: string) {
   return String(formData.get(key) || "").trim();
@@ -335,6 +335,40 @@ export async function updateUserAction(formData: FormData) {
     before: { status: target.status },
     after: { status: updated.status, role_id: role.code },
   });
+  revalidatePath("/");
+ } catch (error) {
+  return toActionError(error);
+ }
+}
+
+/**
+ * Server-side gate for multi-role assignment: the "role_ids" checkbox UI in
+ * UsersPanel is already hidden from other viewers, but the mutation itself must not
+ * trust that - anyone who can hit this action directly must independently be
+ * Super Admin / Nexus Admin / Framework Admin (or Super Admin/platform-admin bypass
+ * via requireActorRole).
+ */
+export async function updateUserRolesAction(formData: FormData) {
+ try {
+  const { user: actor } = await currentActor();
+  requireActorRole(actor, ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"]);
+
+  const userId = getValue(formData, "user_id");
+  requireValue(userId, "User");
+  const target = await getDb().user.findFirst({ where: { OR: [{ legacySourceId: userId }, { id: userId }] } });
+  if (!target) throw new Error("User not found");
+
+  // Repeated `role_ids` checkbox entries (preferred) or a comma-separated fallback.
+  const repeated = formData.getAll("role_ids").map((entry) => String(entry).trim()).filter(Boolean);
+  const roleCodes = repeated.length ? repeated : getValue(formData, "role_ids").split(",").map((code) => code.trim()).filter(Boolean);
+  if (!roleCodes.length) throw new Error("At least one role is required");
+
+  const roles = await getDb().role.findMany({ where: { code: { in: roleCodes } } });
+  const codeToId = new Map(roles.map((role) => [role.code, role.id]));
+  const roleIds = roleCodes.map((code) => codeToId.get(code)).filter((id): id is string => Boolean(id));
+  if (!roleIds.length) throw new Error("None of the selected roles were found");
+
+  await setUserRoles(target.id, roleIds, actor?.id);
   revalidatePath("/");
  } catch (error) {
   return toActionError(error);
@@ -1856,6 +1890,7 @@ export async function createCandidateAction(formData: FormData) {
       position,
       candidateStage: "CREATED",
       status: "active",
+      cvDriveLink: getValue(formData, "cv_drive_link") || null,
       commercialNotes: [
         getValue(formData, "skill_category") ? `Skill: ${getValue(formData, "skill_category")}` : "",
         getValue(formData, "experience_level") ? `Experience: ${getValue(formData, "experience_level")}` : "",

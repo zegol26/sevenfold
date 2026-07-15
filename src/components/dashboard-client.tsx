@@ -10,6 +10,7 @@ import {
   BriefcaseBusiness,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   ChevronUp,
   ClipboardCheck,
   DollarSign,
@@ -84,6 +85,7 @@ import {
   updateProjectGateAction,
   updateTimesheetStatusAction,
   updateUserAction,
+  updateUserRolesAction,
   upsertCommercialProcurementFlowAction,
   upsertProjectResourceDemandAction,
   upsertRatecardResourceAction,
@@ -114,6 +116,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -214,22 +222,18 @@ export function DashboardClient({
   return (
     <ToastProvider>
       <div className="min-h-screen bg-background text-foreground">
-        <div className="grid min-h-screen grid-cols-[272px_minmax(0,1fr)] max-lg:grid-cols-1">
-          <Sidebar
-            nav={nav}
-            section={activeSection}
-            setSection={handleSetSection}
-            mobileOpen={mobileNavOpen}
-            onMobileClose={() => setMobileNavOpen(false)}
-          />
-          <main className="min-w-0">
-            <Topbar
-              user={data.user}
-              section={activeSection}
-              appVersion={appVersion}
-              changelog={changelog}
-              onOpenMobileNav={() => setMobileNavOpen(true)}
-            />
+        <TopNav
+          nav={nav}
+          section={activeSection}
+          setSection={handleSetSection}
+          user={data.user}
+          appVersion={appVersion}
+          changelog={changelog}
+          mobileOpen={mobileNavOpen}
+          onOpenMobileNav={() => setMobileNavOpen(true)}
+          onMobileClose={() => setMobileNavOpen(false)}
+        />
+        <main className="min-w-0">
             <div className="mx-auto grid max-w-[1600px] gap-5 p-6 max-sm:p-4">
               {activeSection === "home" && <Home data={data} setSection={handleSetSection} />}
               {activeSection === "guide" && <KnowledgeGuide role={role} />}
@@ -246,7 +250,9 @@ export function DashboardClient({
               {activeSection === "governance" && <GovernancePanel data={data} />}
               {activeSection === "talent" && <TalentPlanningPanel data={data} />}
               {activeSection === "ratecard" && <RatecardPanel data={data} />}
-              {activeSection === "users" && <UsersPanel users={data.users} clients={data.clients} projects={data.projects} />}
+              {activeSection === "users" && (
+                <UsersPanel users={data.users} clients={data.clients} projects={data.projects} roles={data.roles || []} viewerRoleId={role} />
+              )}
               {activeSection === "master" && (
                 <MasterSetup
                   clients={data.clients}
@@ -320,8 +326,7 @@ export function DashboardClient({
                 />
               )}
             </div>
-          </main>
-        </div>
+        </main>
       </div>
       <Toast open={toastOpen} onOpenChange={setToastOpen}>
         <ToastTitle>Success</ToastTitle>
@@ -332,128 +337,194 @@ export function DashboardClient({
   );
 }
 
-function Sidebar({
+/**
+ * One nav group rendered inside the horizontal bar: ungrouped items (empty label,
+ * e.g. "Dashboard") render as plain buttons; labeled groups (e.g. "Administration")
+ * render as a dropdown button - reuses getNav()'s existing grouping/role-filtering
+ * untouched, this only changes how the returned structure is painted.
+ */
+function NavGroupMenu({
+  group,
+  section,
+  setSection,
+}: {
+  group: NavGroup;
+  section: Section;
+  setSection: (section: Section) => void;
+}) {
+  if (!group.label) {
+    return (
+      <>
+        {group.items.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setSection(item.id)}
+            aria-current={section === item.id ? "page" : undefined}
+            className={cn(
+              "flex h-9 items-center gap-2 whitespace-nowrap rounded-md px-3 text-sm transition-colors",
+              section === item.id ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white",
+            )}
+          >
+            {item.icon}
+            {item.label}
+          </button>
+        ))}
+      </>
+    );
+  }
+
+  const groupHasActiveItem = group.items.some((item) => item.id === section);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex h-9 items-center gap-1 whitespace-nowrap rounded-md px-3 text-sm transition-colors",
+            groupHasActiveItem ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white",
+          )}
+        >
+          {group.label}
+          <ChevronDown className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-56">
+        {group.items.map((item) => (
+          <DropdownMenuItem
+            key={item.id}
+            onSelect={() => setSection(item.id)}
+            className={cn("gap-2", section === item.id && "bg-muted font-medium")}
+          >
+            {item.icon}
+            {item.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Horizontal top nav: brand on the left, grouped dropdown menus in the middle
+ * (getNav()'s groups, unchanged), search/notifications-equivalent (VersionBadge) +
+ * user menu + sign-out on the right - merges the former Sidebar and Topbar into one
+ * full-width bar so page content reclaims the sidebar's horizontal space.
+ * Dropdowns are Radix DropdownMenu, which already closes on outside click/Escape
+ * and is keyboard-navigable, so no extra click-outside handling is needed here.
+ */
+function TopNav({
   nav,
   section,
   setSection,
+  user,
+  appVersion,
+  changelog,
   mobileOpen,
+  onOpenMobileNav,
   onMobileClose,
 }: {
   nav: NavGroup[];
   section: Section;
   setSection: (section: Section) => void;
-  mobileOpen: boolean;
-  onMobileClose: () => void;
-}) {
-  const content = (
-    <>
-      <div className="flex items-start justify-between px-2">
-        <div>
-          <div className="text-base font-semibold tracking-wide text-white">NEXUS SEVENFOLD</div>
-          <div className="mt-1 text-xs text-slate-300">Business & Project Management</div>
-        </div>
-        <button
-          type="button"
-          className="rounded-md p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white lg:hidden"
-          onClick={onMobileClose}
-          aria-label="Close navigation"
-        >
-          <X className="h-5 w-5" />
-        </button>
-      </div>
-      {/* Scrollable nav region: long menus never get cut off on short screens. */}
-      <nav className="mt-5 min-h-0 flex-1 overflow-y-auto pb-4 [scrollbar-width:thin]" aria-label="Main navigation">
-        {nav.map((group) => (
-          <div key={group.label || "primary"} className="mb-4">
-            {group.label && (
-              <div className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                {group.label}
-              </div>
-            )}
-            <div className="grid gap-0.5">
-              {group.items.map((item) => (
-                <button
-                  className={cn(
-                    "flex h-9 items-center gap-3 rounded-md px-3 text-left text-sm transition-colors",
-                    section === item.id ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white",
-                  )}
-                  key={item.id}
-                  onClick={() => setSection(item.id)}
-                  aria-current={section === item.id ? "page" : undefined}
-                  type="button"
-                >
-                  {item.icon}
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
-      </nav>
-    </>
-  );
-
-  return (
-    <>
-      {/* Desktop rail */}
-      <aside className="sticky top-0 flex h-screen flex-col border-e bg-sidebar px-4 py-5 text-sidebar-foreground max-lg:hidden">
-        {content}
-      </aside>
-      {/* Mobile drawer */}
-      {mobileOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
-          <div className="absolute inset-0 bg-slate-950/50" onClick={onMobileClose} />
-          <aside className="absolute inset-y-0 start-0 flex w-[300px] max-w-[85vw] flex-col bg-sidebar px-4 py-5 text-sidebar-foreground shadow-xl">
-            {content}
-          </aside>
-        </div>
-      )}
-    </>
-  );
-}
-
-function Topbar({
-  user,
-  section,
-  appVersion,
-  changelog,
-  onOpenMobileNav,
-}: {
   user: DashboardData["user"];
-  section: Section;
   appVersion: string;
   changelog: ChangelogEntry[];
+  mobileOpen: boolean;
   onOpenMobileNav: () => void;
+  onMobileClose: () => void;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b bg-card/95 px-6 backdrop-blur max-sm:px-3">
-      <div className="flex min-w-0 items-center gap-3">
+    <header className="sticky top-0 z-30 border-b bg-sidebar text-sidebar-foreground">
+      <div className="flex h-16 items-center gap-3 px-6 max-sm:px-3">
         <button
           type="button"
-          className="rounded-md border p-2 text-muted-foreground hover:bg-muted lg:hidden"
+          className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white lg:hidden"
           onClick={onOpenMobileNav}
           aria-label="Open navigation"
         >
           <Menu className="h-5 w-5" />
         </button>
-        <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold text-foreground">{titleFor(section)}</h1>
-          <p className="truncate text-sm text-muted-foreground max-sm:hidden">{descriptionFor(section)}</p>
+        <div className="flex-none">
+          <div className="text-base font-semibold tracking-wide text-white">NEXUS SEVENFOLD</div>
+          <div className="text-[11px] text-slate-300 max-sm:hidden">Business & Project Management</div>
         </div>
-        <VersionBadge version={appVersion} changelog={changelog} />
-      </div>
-      <div className="flex flex-none items-center gap-3">
-        <div className="text-right max-sm:hidden">
-          <div className="text-sm font-medium">{user?.email}</div>
-          <Badge variant="secondary" className="mt-1">{humanizeRole(user?.role_id)}</Badge>
+        <nav className="ms-2 hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto lg:flex" aria-label="Main navigation">
+          {nav.map((group) => (
+            <NavGroupMenu key={group.label || "primary"} group={group} section={section} setSection={setSection} />
+          ))}
+        </nav>
+        <div className="ms-auto flex flex-none items-center gap-3">
+          <VersionBadge version={appVersion} changelog={changelog} />
+          <div className="text-right max-sm:hidden">
+            <div className="text-sm font-medium text-white">{user?.email}</div>
+            <Badge variant="secondary" className="mt-1">{humanizeRole(user?.role_id)}</Badge>
+          </div>
+          <form action="/api/auth/logout" method="post">
+            <Button variant="outline" type="submit">
+              <LogOut className="h-4 w-4" />
+              <span className="max-sm:hidden">Sign out</span>
+            </Button>
+          </form>
         </div>
-        <form action="/api/auth/logout" method="post">
-          <Button variant="outline" type="submit">
-            <LogOut className="h-4 w-4" />
-            <span className="max-sm:hidden">Sign out</span>
-          </Button>
-        </form>
       </div>
+      <div className="border-t border-slate-800/80 px-6 py-2 lg:hidden">
+        <h1 className="truncate text-sm font-semibold text-white">{titleFor(section)}</h1>
+        <p className="truncate text-xs text-slate-300">{descriptionFor(section)}</p>
+      </div>
+      {/* Mobile drawer: same grouped items, painted as a vertical list. */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+          <div className="absolute inset-0 bg-slate-950/50" onClick={onMobileClose} />
+          <aside className="absolute inset-y-0 start-0 flex w-[300px] max-w-[85vw] flex-col overflow-y-auto bg-sidebar px-4 py-5 text-sidebar-foreground shadow-xl">
+            <div className="flex items-start justify-between px-2">
+              <div>
+                <div className="text-base font-semibold tracking-wide text-white">NEXUS SEVENFOLD</div>
+                <div className="mt-1 text-xs text-slate-300">Business & Project Management</div>
+              </div>
+              <button
+                type="button"
+                className="rounded-md p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white"
+                onClick={onMobileClose}
+                aria-label="Close navigation"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <nav className="mt-5 min-h-0 flex-1 overflow-y-auto pb-4 [scrollbar-width:thin]" aria-label="Mobile navigation">
+              {nav.map((group) => (
+                <div key={group.label || "primary"} className="mb-4">
+                  {group.label && (
+                    <div className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      {group.label}
+                    </div>
+                  )}
+                  <div className="grid gap-0.5">
+                    {group.items.map((item) => (
+                      <button
+                        className={cn(
+                          "flex h-9 items-center gap-3 rounded-md px-3 text-left text-sm transition-colors",
+                          section === item.id ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800 hover:text-white",
+                        )}
+                        key={item.id}
+                        onClick={() => {
+                          setSection(item.id);
+                          onMobileClose();
+                        }}
+                        aria-current={section === item.id ? "page" : undefined}
+                        type="button"
+                      >
+                        {item.icon}
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </nav>
+          </aside>
+        </div>
+      )}
     </header>
   );
 }
@@ -2253,10 +2324,106 @@ function SdsDecisionButton({ sdsId, decision, label }: { sdsId: string; decision
   );
 }
 
+const SDOA_COMPARISON_FIELDS: Array<{ key: string; label: string }> = [
+  { key: "value", label: "Value" },
+  { key: "scope", label: "Scope" },
+  { key: "timeline", label: "Timeline" },
+  { key: "payment_terms", label: "Payment terms" },
+];
+
+/** True once a decision has been recorded - the "pending" outcome set at creation still needs a decision. */
+function isSdoaDecided(sdoa: RecordMap) {
+  return Boolean(sdoa.outcome) && sdoa.outcome !== "pending";
+}
+
+/** Action-column control: decision buttons while pending, a status badge once decided - same rule as SdsDetailCard. */
+function SdoaActionCell({ sdoa }: { sdoa: RecordMap }) {
+  if (isSdoaDecided(sdoa)) {
+    return <StatusBadge value={sdoa.outcome} />;
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="acknowledged" label="Acknowledge" />
+      <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="returned" label="Return" />
+      <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="rejected" label="Reject" />
+    </div>
+  );
+}
+
+/** Baseline-vs-received detail for one SDOA record, used by both the quick-select view and the card-grid modal. */
+function SdoaDetailCard({ sdoa, deviations }: { sdoa: RecordMap; deviations: RecordMap[] }) {
+  const byCategory = new Map(deviations.filter((deviation) => deviation.sdoa_id === sdoa.sdoa_id).map((deviation) => [deviation.category, deviation]));
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div>
+          <CardTitle className="font-mono text-sm">{sdoa.sdoa_id}</CardTitle>
+          <CardDescription>
+            {sdoa.opportunity_id} · PO {sdoa.received_po_number || "-"}
+            {sdoa.contract_document_id ? ` · Contract ${sdoa.contract_document_id}` : ""}
+          </CardDescription>
+        </div>
+        <StatusBadge value={sdoa.outcome} />
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+          {SDOA_COMPARISON_FIELDS.map(({ key, label }) => {
+            const deviation = byCategory.get(key);
+            const baseline = deviation?.baseline_value || "-";
+            const received = deviation?.received_value || "-";
+            const flagged = Boolean(deviation) && baseline !== "-" && received !== "-" && baseline !== received;
+            return (
+              <div key={key} className={cn("rounded-md border p-3", flagged ? "border-warning bg-warning/10" : "border-border")}>
+                <div className="flex items-center justify-between text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <span>{label}</span>
+                  {flagged && <span className="text-warning">Deviation</span>}
+                </div>
+                <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <div className="text-[11px] text-muted-foreground">Baseline</div>
+                    {baseline}
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-muted-foreground">Received</div>
+                    {received}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {sdoa.comments && <div className="text-sm text-muted-foreground">{sdoa.comments}</div>}
+        {isSdoaDecided(sdoa) ? (
+          <div className="text-xs text-muted-foreground">Decided by {sdoa.sponsor || "-"} at {sdoa.decided_at || "-"}</div>
+        ) : (
+          <div className="flex flex-wrap gap-2 pt-2">
+            <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="acknowledged" label="Acknowledge" />
+            <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="returned" label="Return" />
+            <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="rejected" label="Reject" />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+type SdoaViewMode = "search" | "grid" | "list";
+
 function SdoaPanel({ data }: { data: DashboardData }) {
   const analysis = data.opportunity_analysis || emptyOpportunityAnalysis();
   const approvedSdsOpportunityIds = new Set(analysis.sdsRecords.filter((sds) => sds.decision === "approved").map((sds) => sds.opportunity_id));
   const opportunities = analysis.opportunities.filter((opportunity) => approvedSdsOpportunityIds.has(opportunity.opportunity_id)).map((opportunity) => ({ id: opportunity.opportunity_id, label: `${opportunity.opportunity_id} - ${opportunity.customer_name}` }));
+
+  const [viewMode, setViewMode] = useState<SdoaViewMode>("search");
+  const [selectedSdoaId, setSelectedSdoaId] = useState("");
+  const [modalSdoaId, setModalSdoaId] = useState<string | null>(null);
+
+  const sdoaOptions = analysis.sdoaRecords.map((sdoa) => ({
+    id: sdoa.sdoa_id,
+    label: `${sdoa.sdoa_id} · ${sdoa.opportunity_id} · PO ${sdoa.received_po_number || "-"}`,
+  }));
+  const selectedSdoa = analysis.sdoaRecords.find((sdoa) => sdoa.sdoa_id === selectedSdoaId) || null;
+  const modalSdoa = analysis.sdoaRecords.find((sdoa) => sdoa.sdoa_id === modalSdoaId) || null;
 
   return (
     <section className="grid gap-5">
@@ -2289,29 +2456,98 @@ function SdoaPanel({ data }: { data: DashboardData }) {
           <Button className="xl:col-span-4" type="submit">Create SDOA</Button>
         </ActionForm>
       </OpportunityFormCard>
-      <DataTable
-        headers={["SDOA", "Opportunity", "PO", "Outcome", "Sponsor", "Decided", "Comments", "Action"]}
-        rows={analysis.sdoaRecords}
-        render={(sdoa) => (
-          <TableRow key={sdoa.sdoa_id}>
-            <TableCell className="font-mono text-xs">{sdoa.sdoa_id}</TableCell>
-            <TableCell>{sdoa.opportunity_id}</TableCell>
-            <TableCell>{sdoa.received_po_number || "-"}</TableCell>
-            <TableCell><StatusBadge value={sdoa.outcome} /></TableCell>
-            <TableCell>{sdoa.sponsor || "-"}</TableCell>
-            <TableCell>{sdoa.decided_at || "-"}</TableCell>
-            <TableCell>{sdoa.comments || "-"}</TableCell>
-            <TableCell>
-              <div className="flex gap-2">
-                <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="acknowledged" label="Acknowledge" />
-                <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="returned" label="Return" />
-                <SdoaDecisionButton sdoaId={sdoa.sdoa_id} decision="rejected" label="Reject" />
-              </div>
-            </TableCell>
-          </TableRow>
-        )}
-      />
+
+      <Card>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Order Acknowledgements</CardTitle>
+            <CardDescription>Look up a single record, browse the card grid, or scan the compact list.</CardDescription>
+          </div>
+          <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as SdoaViewMode)}>
+            <TabsList>
+              <TabsTrigger value="search">Quick select</TabsTrigger>
+              <TabsTrigger value="grid">Card grid</TabsTrigger>
+              <TabsTrigger value="list">List</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          {viewMode === "search" && (
+            <div className="grid gap-4">
+              <NativeSelect
+                name="sdoa_lookup"
+                value={selectedSdoaId}
+                onValueChange={setSelectedSdoaId}
+                options={sdoaOptions}
+                emptyLabel="Search by SDOA ID, opportunity, or PO number"
+                className="max-w-xl"
+              />
+              {selectedSdoa ? (
+                <SdoaDetailCard sdoa={selectedSdoa} deviations={analysis.sdoaDeviations} />
+              ) : (
+                <Alert>
+                  <AlertTitle>No record selected</AlertTitle>
+                  <AlertDescription>Pick an SDOA above to see the baseline-vs-received comparison.</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          )}
+          {viewMode === "grid" && (
+            <div className="grid grid-cols-4 gap-3 max-xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+              {analysis.sdoaRecords.map((sdoa) => (
+                <button
+                  key={sdoa.sdoa_id}
+                  type="button"
+                  onClick={() => setModalSdoaId(sdoa.sdoa_id)}
+                  className="rounded-lg border bg-card p-3 text-left text-sm shadow-sm transition-colors hover:border-primary hover:bg-accent"
+                >
+                  <div className="font-mono text-xs text-muted-foreground">{sdoa.sdoa_id}</div>
+                  <div className="mt-1 truncate font-medium">{sdoa.opportunity_id}</div>
+                  <div className="truncate text-xs text-muted-foreground">PO {sdoa.received_po_number || "-"}</div>
+                  <div className="mt-2"><StatusBadge value={sdoa.outcome} /></div>
+                </button>
+              ))}
+              {analysis.sdoaRecords.length === 0 && (
+                <div className="col-span-full text-sm text-muted-foreground">No Sales Decision Order Acknowledgements yet.</div>
+              )}
+            </div>
+          )}
+          {viewMode === "list" && (
+            <DataTable
+              headers={["SDOA", "Opportunity", "PO", "Outcome", "Sponsor", "Decided", "Comments", "Action"]}
+              rows={analysis.sdoaRecords}
+              render={(sdoa) => (
+                <TableRow key={sdoa.sdoa_id}>
+                  <TableCell className="font-mono text-xs">{sdoa.sdoa_id}</TableCell>
+                  <TableCell>{sdoa.opportunity_id}</TableCell>
+                  <TableCell>{sdoa.received_po_number || "-"}</TableCell>
+                  <TableCell><StatusBadge value={sdoa.outcome} /></TableCell>
+                  <TableCell>{sdoa.sponsor || "-"}</TableCell>
+                  <TableCell>{sdoa.decided_at || "-"}</TableCell>
+                  <TableCell>{sdoa.comments || "-"}</TableCell>
+                  <TableCell><SdoaActionCell sdoa={sdoa} /></TableCell>
+                </TableRow>
+              )}
+            />
+          )}
+        </CardContent>
+      </Card>
+
       <ControlPlaneTable headers={["SDOA", "Opportunity", "Category", "Baseline", "Received", "Decision", "Comment"]} rows={analysis.sdoaDeviations} />
+
+      <Dialog open={Boolean(modalSdoa)} onOpenChange={(open) => !open && setModalSdoaId(null)}>
+        <DialogContent className="max-w-2xl">
+          {modalSdoa && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{modalSdoa.sdoa_id}</DialogTitle>
+                <DialogDescription>{modalSdoa.opportunity_id}</DialogDescription>
+              </DialogHeader>
+              <SdoaDetailCard sdoa={modalSdoa} deviations={analysis.sdoaDeviations} />
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
@@ -3048,15 +3284,26 @@ function RatecardPanel({ data }: { data: DashboardData }) {
   );
 }
 
+const ROLE_ASSIGNMENT_ROLES: RoleId[] = ["ROLE_SUPER_ADMIN", "ROLE_NEXUS_ADMIN", "ROLE_FRAMEWORK_ADMIN"];
+
+function roleLabel(roles: DashboardData["clients"], code: string) {
+  return roles.find((role) => role.id === code)?.label || code.replace(/^ROLE_/, "").replaceAll("_", " ");
+}
+
 function UsersPanel({
   users,
   clients,
   projects,
+  roles,
+  viewerRoleId,
 }: {
   users: RecordMap[];
   clients: DashboardData["clients"];
   projects: DashboardData["projects"];
+  roles: DashboardData["clients"];
+  viewerRoleId: RoleId;
 }) {
+  const canAssignRoles = ROLE_ASSIGNMENT_ROLES.includes(viewerRoleId);
   return (
     <Tabs defaultValue="list">
       <div className="flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-start">
@@ -3069,45 +3316,62 @@ function UsersPanel({
         <Card>
           <CardHeader>
             <CardTitle>User Management</CardTitle>
-            <CardDescription>Super Admin controls access, role scope, and temporary password resets.</CardDescription>
+            <CardDescription>
+              {canAssignRoles
+                ? "Super Admin, Nexus Admin, and Framework Admin can assign multiple roles per user, plus scope and temporary password resets."
+                : "Role assignment is limited to Super Admin, Nexus Admin, and Framework Admin. You can view assigned roles below."}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <DataTable
-              headers={["Email", "Name", "Role", "Scope", "Status", "Actions"]}
+              headers={["Email", "Name", "Roles", "Scope", "Status", "Actions"]}
               rows={users}
-              render={(user) => (
-                <TableRow key={user.user_id}>
-                  <TableCell className="font-medium">{user.email}</TableCell>
-                  <TableCell>{user.full_name}</TableCell>
-                  <TableCell><Badge variant="secondary">{user.role_id}</Badge></TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{user.client_id || user.employee_id || "-"}</TableCell>
-                  <TableCell><StatusBadge value={user.status} /></TableCell>
-                  <TableCell>
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button variant="outline" size="sm">Edit</Button>
-                      </DialogTrigger>
-                      <DialogContent className="max-w-2xl">
-                        <DialogHeader>
-                          <DialogTitle>Edit user</DialogTitle>
-                          <DialogDescription>Update role, scope, status, or reset password.</DialogDescription>
-                        </DialogHeader>
-                        <ActionForm action={updateUserAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
-                          <input name="user_id" type="hidden" value={user.user_id} />
-                          <Input name="full_name" defaultValue={user.full_name} placeholder="Full name" />
-                          <Input name="role_id" defaultValue={user.role_id} placeholder="Role ID" />
-                          <NativeSelect name="client_id" defaultValue={user.client_id} options={clients} emptyLabel="No client" />
-                          <NativeSelect name="project_id" defaultValue={user.project_id} options={projects} emptyLabel="No project" />
-                          <Input name="employee_id" defaultValue={user.employee_id} placeholder="Employee ID" />
-                          <Input name="temporary_password" placeholder="Reset password" type="password" />
-                          <Input name="status" defaultValue={user.status} placeholder="Status" />
-                          <Button className="sm:col-span-2" type="submit">Save changes</Button>
-                        </ActionForm>
-                      </DialogContent>
-                    </Dialog>
-                  </TableCell>
-                </TableRow>
-              )}
+              render={(user) => {
+                const roleIds = (user.role_ids || user.role_id || "").split(",").map((code) => code.trim()).filter(Boolean);
+                return (
+                  <TableRow key={user.user_id}>
+                    <TableCell className="font-medium">{user.email}</TableCell>
+                    <TableCell>{user.full_name}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {roleIds.map((code) => (
+                          <Badge key={code} variant="secondary">{roleLabel(roles, code)}</Badge>
+                        ))}
+                        {roleIds.length === 0 && <span className="text-xs text-muted-foreground">-</span>}
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{user.client_id || user.employee_id || "-"}</TableCell>
+                    <TableCell><StatusBadge value={user.status} /></TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-2">
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button variant="outline" size="sm">Edit</Button>
+                          </DialogTrigger>
+                          <DialogContent className="max-w-2xl">
+                            <DialogHeader>
+                              <DialogTitle>Edit user</DialogTitle>
+                              <DialogDescription>Update scope, status, or reset password.</DialogDescription>
+                            </DialogHeader>
+                            <ActionForm action={updateUserAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                              <input name="user_id" type="hidden" value={user.user_id} />
+                              <Input name="full_name" defaultValue={user.full_name} placeholder="Full name" />
+                              <Input name="role_id" type="hidden" defaultValue={roleIds[0] || user.role_id} />
+                              <NativeSelect name="client_id" defaultValue={user.client_id} options={clients} emptyLabel="No client" />
+                              <NativeSelect name="project_id" defaultValue={user.project_id} options={projects} emptyLabel="No project" />
+                              <Input name="employee_id" defaultValue={user.employee_id} placeholder="Employee ID" />
+                              <Input name="temporary_password" placeholder="Reset password" type="password" />
+                              <Input name="status" defaultValue={user.status} placeholder="Status" />
+                              <Button className="sm:col-span-2" type="submit">Save changes</Button>
+                            </ActionForm>
+                          </DialogContent>
+                        </Dialog>
+                        {canAssignRoles && <UserRolesDialog user={user} roleIds={roleIds} roles={roles} />}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              }}
             />
           </CardContent>
         </Card>
@@ -3136,6 +3400,61 @@ function UsersPanel({
         </Card>
       </TabsContent>
     </Tabs>
+  );
+}
+
+/** Editable multi-role checkbox list, restricted (server-side too, see updateUserRolesAction) to Super/Nexus/Framework Admin. */
+function UserRolesDialog({
+  user,
+  roleIds,
+  roles,
+}: {
+  user: RecordMap;
+  roleIds: string[];
+  roles: DashboardData["clients"];
+}) {
+  const [selected, setSelected] = useState<string[]>(roleIds);
+
+  function toggle(code: string) {
+    setSelected((current) => (current.includes(code) ? current.filter((value) => value !== code) : [...current, code]));
+  }
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">Assign roles</Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Assign roles</DialogTitle>
+          <DialogDescription>
+            {user.email} — the first checked role becomes the primary role used for permission checks; all checked
+            roles are granted.
+          </DialogDescription>
+        </DialogHeader>
+        <ActionForm action={updateUserRolesAction} className="grid gap-3">
+          <input name="user_id" type="hidden" value={user.user_id} />
+          <div className="grid max-h-80 gap-1 overflow-y-auto rounded-md border p-2">
+            {roles.map((role) => (
+              <label key={role.id} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted">
+                <input
+                  type="checkbox"
+                  name="role_ids"
+                  value={role.id}
+                  checked={selected.includes(role.id)}
+                  onChange={() => toggle(role.id)}
+                  className="h-4 w-4 rounded border-input"
+                />
+                <span className="flex-1">{role.label}</span>
+                {selected[0] === role.id && <Badge variant="secondary">Primary</Badge>}
+              </label>
+            ))}
+            {roles.length === 0 && <div className="p-2 text-sm text-muted-foreground">No roles available.</div>}
+          </div>
+          <Button type="submit" disabled={selected.length === 0}>Save roles</Button>
+        </ActionForm>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3200,6 +3519,29 @@ function MasterSetup({
   );
 }
 
+const GOOGLE_DRIVE_LINK_PATTERN = /drive\.google\.com\/(file\/d\/|open\?id=)/i;
+
+/** Google Drive CV link input with live, client-side format validation (no server round-trip). */
+function CvDriveLinkField({ className, defaultValue }: { className?: string; defaultValue?: string }) {
+  const [value, setValue] = useState(defaultValue || "");
+  const trimmed = value.trim();
+  const isValid = trimmed.length > 0 && GOOGLE_DRIVE_LINK_PATTERN.test(trimmed);
+  const isInvalid = trimmed.length > 0 && !isValid;
+
+  return (
+    <div className={cn("grid gap-1", className)}>
+      <Input
+        name="cv_drive_link"
+        placeholder="https://drive.google.com/file/d/..."
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+      />
+      {isValid && <p className="text-xs text-success">Looks like a valid Drive link.</p>}
+      {isInvalid && <p className="text-xs text-warning">Doesn&apos;t look like a Drive link.</p>}
+    </div>
+  );
+}
+
 function CandidatePanel({
   candidates,
   clients,
@@ -3234,6 +3576,7 @@ function CandidatePanel({
               emptyLabel="No client yet"
             />
             <NativeSelect name="project_id" options={projects} emptyLabel="No project yet" />
+            <CvDriveLinkField className="xl:col-span-2 max-sm:col-span-1" />
             <Button className="max-xl:col-span-2 max-sm:col-span-1" type="submit">
               <Plus className="h-4 w-4" /> Create Candidate
             </Button>

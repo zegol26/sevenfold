@@ -594,6 +594,9 @@ export type DashboardData = {
     invoices?: number;
   };
   users: RecordMap[];
+  // All active roles (id = Role.code, label = Role.name), for the Users panel's
+  // multi-role checkbox list. Empty for non-Super-Admin viewers, same gating as `users`.
+  roles?: Option[];
   // Lightweight name+role directory for assignment dropdowns (Sponsor, Project Leader,
   // etc.) - unlike `users`, not gated to Super Admin, since names/roles aren't sensitive
   // and forms across the app need to assign people without a full user-management view.

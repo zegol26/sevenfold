@@ -321,6 +321,12 @@ model Resource {
   netPayEstimate                   Decimal?             @db.Decimal(18, 2)
   invoiceAmountEstimate            Decimal?             @db.Decimal(18, 2)
   commercialNotes                  String?
+  // Candidate intake: link to the candidate's CV stored in Google Drive.
+  // TODO(user): run `npm run db:migrate -- --name add_resource_cv_drive_link` (or
+  // `npx prisma migrate dev --name add_resource_cv_drive_link`) against a safe/dev
+  // database to generate and apply the migration for this column - not run here
+  // because .env.local's DATABASE_URL points at a live Neon database.
+  cvDriveLink                      String?
   legacySourceId                   String?
   user                             User?
   assignments                      Assignment[]
