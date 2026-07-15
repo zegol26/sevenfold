@@ -2748,19 +2748,26 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
               <Input name="scope_package" placeholder="Scope package" />
               <Input name="planned_date" type="date" />
               <Input name="actual_date" type="date" />
-              <Input name="progress_status" placeholder="Progress status" />
-              <Input name="acceptance_status" placeholder="Acceptance status" />
+              <Input name="progress_status" placeholder="Progress status, e.g. HW installation" />
+              <SiteAcceptanceStatusSelect />
               <Input name="acceptance_certificate_document" placeholder="Acceptance Certificate Drive ID/link" />
               <Input name="good_receipt_document" placeholder="Good Receipt Drive ID/link" />
-              <Input name="invoice_status" placeholder="Invoice status" />
+              <SiteInvoiceStatusSelect />
               <Input name="invoice_document" placeholder="Invoice Drive ID/link" />
-              <Input name="handover_status" placeholder="Handover status" />
+              <SiteHandoverStatusSelect />
               <MoneyInput name="accepted_scope_value" placeholder="Accepted scope value" />
               <Button className="2xl:col-span-5" type="submit">Save Site / Cluster</Button>
             </ActionForm>
           </OpportunityFormCard>
+          <Alert className="mb-4">
+            <AlertTitle>Acceptance status drives Net Sales Estimate</AlertTitle>
+            <AlertDescription>
+              Only sites marked Accepted, Delivery Accepted, or GR Ready count toward the "Net Sales Estimate" metric
+              above - that&apos;s why the dropdown is now fixed to these exact values instead of free text.
+            </AlertDescription>
+          </Alert>
           <DataTable
-            headers={["Project", "Site", "Scope", "Plan", "Actual", "Progress", "Acceptance", "GR", "Invoice", "Handover", "Net Sales Value"]}
+            headers={["Project", "Site", "Scope", "Plan", "Actual", "Progress", "Acceptance", "GR", "Invoice", "Handover", "Net Sales Value", "Actions"]}
             rows={execution.sites}
             render={(site) => (
               <TableRow key={`${site.projectId}-${site.siteClusterId}`}>
@@ -2775,6 +2782,7 @@ function ProjectExecutionPanel({ data }: { data: DashboardData }) {
                 <TableCell>{site.invoiceStatus}</TableCell>
                 <TableCell>{site.handoverStatus}</TableCell>
                 <TableCell>{money(site.acceptedScopeValue, projectCurrencyById.get(site.projectId))}</TableCell>
+                <TableCell><SiteHandlerDialog site={site} currency={projectCurrencyById.get(site.projectId)} /></TableCell>
               </TableRow>
             )}
           />
@@ -2917,6 +2925,94 @@ function GateDecisionForm({ gateId, decision, label }: { gateId: string; decisio
       <Input name="comments" placeholder="Sponsor comments" />
       <Button type="submit" variant={decision === "approved" ? "default" : "outline"}>{label}</Button>
     </ActionForm>
+  );
+}
+
+/** Only these values feed calculateNetSales (see projectExecutionService.ts) - keep in sync. */
+const SITE_ACCEPTANCE_STATUS_OPTIONS: [string, string][] = [
+  ["pending", "Pending"],
+  ["in_review", "In review"],
+  ["accepted", "Accepted"],
+  ["delivery_accepted", "Delivery accepted"],
+  ["gr_ready", "GR ready"],
+  ["rejected", "Rejected"],
+];
+const SITE_INVOICE_STATUS_OPTIONS: [string, string][] = [
+  ["not_invoiced", "Not invoiced"],
+  ["invoiced", "Invoiced"],
+  ["paid", "Paid"],
+];
+const SITE_HANDOVER_STATUS_OPTIONS: [string, string][] = [
+  ["pending", "Pending"],
+  ["in_progress", "In progress"],
+  ["completed", "Completed"],
+];
+
+function SiteAcceptanceStatusSelect({ defaultValue }: { defaultValue?: string }) {
+  return (
+    <Select name="acceptance_status" defaultValue={defaultValue || "pending"}>
+      <SelectTrigger><SelectValue placeholder="Acceptance status" /></SelectTrigger>
+      <SelectContent>
+        {SITE_ACCEPTANCE_STATUS_OPTIONS.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function SiteInvoiceStatusSelect({ defaultValue }: { defaultValue?: string }) {
+  return (
+    <Select name="invoice_status" defaultValue={defaultValue || "not_invoiced"}>
+      <SelectTrigger><SelectValue placeholder="Invoice status" /></SelectTrigger>
+      <SelectContent>
+        {SITE_INVOICE_STATUS_OPTIONS.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function SiteHandoverStatusSelect({ defaultValue }: { defaultValue?: string }) {
+  return (
+    <Select name="handover_status" defaultValue={defaultValue || "pending"}>
+      <SelectTrigger><SelectValue placeholder="Handover status" /></SelectTrigger>
+      <SelectContent>
+        {SITE_HANDOVER_STATUS_OPTIONS.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
+ * Per-row edit for a site/cluster - resubmits the same project_id + site_cluster_id, which
+ * upsertSiteHandlerAction matches on to update in place (see the filter in actions.ts), so
+ * updating progress step-by-step doesn't require retyping every field from scratch.
+ */
+function SiteHandlerDialog({ site, currency }: { site: RecordMap; currency?: string }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-auto">
+        <DialogHeader>
+          <DialogTitle>{site.siteClusterId}</DialogTitle>
+          <DialogDescription>{site.projectId} - update progress as work moves through each stage.</DialogDescription>
+        </DialogHeader>
+        <ActionForm action={upsertSiteHandlerAction} className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+          <input name="project_id" type="hidden" value={site.projectId} />
+          <input name="site_cluster_id" type="hidden" value={site.siteClusterId} />
+          <Input name="scope_package" defaultValue={site.scopePackage} placeholder="Scope package" />
+          <Input name="planned_date" type="date" defaultValue={site.plannedDate} />
+          <Input name="actual_date" type="date" defaultValue={site.actualDate} />
+          <Input name="progress_status" defaultValue={site.progressStatus} placeholder="Progress status, e.g. HW installation" />
+          <SiteAcceptanceStatusSelect defaultValue={site.acceptanceStatus} />
+          <Input name="acceptance_certificate_document" defaultValue={site.acceptanceCertificateDocument} placeholder="Acceptance Certificate Drive ID/link" />
+          <Input name="good_receipt_document" defaultValue={site.goodReceiptDocument} placeholder="Good Receipt Drive ID/link" />
+          <SiteInvoiceStatusSelect defaultValue={site.invoiceStatus} />
+          <Input name="invoice_document" defaultValue={site.invoiceDocument} placeholder="Invoice Drive ID/link" />
+          <SiteHandoverStatusSelect defaultValue={site.handoverStatus} />
+          <MoneyInput name="accepted_scope_value" value={site.acceptedScopeValue} placeholder={`Accepted scope value (${currency || "USD"})`} />
+          <Button className="col-span-2" type="submit">Save Progress</Button>
+        </ActionForm>
+      </DialogContent>
+    </Dialog>
   );
 }
 
